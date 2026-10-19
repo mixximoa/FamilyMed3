@@ -1,0 +1,910 @@
+<div id="toast-container"></div>
+
+    <!-- PIN LOCK SCREEN OVERLAY -->
+    <div id="pinLockOverlay">
+        <div style="font-size:3rem; margin-bottom:8px;">🔐</div>
+        <h2 style="font-size:1.3rem;">Сімейна Медкартка PRO</h2>
+        <p id="pinPromptText" style="font-size:0.9rem; opacity:0.85; margin-top:4px;">Введіть 4-значний PIN-код для входу</p>
+        <div class="pin-dots">
+            <div class="pin-dot" id="pdot0"></div>
+            <div class="pin-dot" id="pdot1"></div>
+            <div class="pin-dot" id="pdot2"></div>
+            <div class="pin-dot" id="pdot3"></div>
+        </div>
+        <div class="pin-keypad">
+            <button class="pin-key" onclick="pressPinDigit('1')">1</button>
+            <button class="pin-key" onclick="pressPinDigit('2')">2</button>
+            <button class="pin-key" onclick="pressPinDigit('3')">3</button>
+            <button class="pin-key" onclick="pressPinDigit('4')">4</button>
+            <button class="pin-key" onclick="pressPinDigit('5')">5</button>
+            <button class="pin-key" onclick="pressPinDigit('6')">6</button>
+            <button class="pin-key" onclick="pressPinDigit('7')">7</button>
+            <button class="pin-key" onclick="pressPinDigit('8')">8</button>
+            <button class="pin-key" onclick="pressPinDigit('9')">9</button>
+            <button class="pin-key" style="font-size:0.9rem;" onclick="clearPinDigits()">Стерти</button>
+            <button class="pin-key" onclick="pressPinDigit('0')">0</button>
+            <button class="pin-key" style="font-size:1.2rem;" onclick="backspacePinDigit()">⌫</button>
+        </div>
+    </div>
+
+    <header>
+        <div class="header-title">🩺 Сімейна Медкартка <span style="font-size:0.7rem; background:rgba(255,255,255,0.25); padding:2px 6px; border-radius:6px;">PRO</span></div>
+        <div class="header-actions">
+            <button class="icon-btn" onclick="openPrintableReportModal()" title="Виписка PDF / Друк">🖨️</button>
+            <button class="icon-btn" onclick="toggleTheme()" title="Змінити тему" id="themeBtn">🌙</button>
+            <button class="icon-btn" onclick="openHelpModal()" title="Довідка">❓</button>
+            <button class="icon-btn" onclick="switchTab('settings')" title="Налаштування">⚙️</button>
+        </div>
+    </header>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('members')"><span class="tab-icon">👨‍👩‍👧‍👦</span>Сім'я</div>
+        <div class="tab" onclick="switchTab('visits')"><span class="tab-icon">📋</span>Журнал</div>
+        <div class="tab" onclick="switchTab('meds')"><span class="tab-icon">💊</span>Ліки й Аптечка</div>
+        <div class="tab" onclick="switchTab('doctors')"><span class="tab-icon">📇</span>Лікарі</div>
+        <div class="tab" onclick="switchTab('docs')"><span class="tab-icon">📁</span>Файли</div>
+        <div class="tab" onclick="switchTab('timeline')"><span class="tab-icon">🌳</span>Історія</div>
+        <div class="tab" onclick="switchTab('analytics')"><span class="tab-icon">📊</span>Аналітика</div>
+        <div class="tab" onclick="switchTab('settings')"><span class="tab-icon">⚙️</span>Меню</div>
+    </div>
+
+    <div class="container">
+        <!-- AUTO-BACKUP DUE BANNER -->
+        <div id="backupDueBanner">
+            <div style="font-size:0.84rem; line-height:1.35;">
+                <b>⏰ Час резервного копіювання!</b><br>
+                Минув обраний інтервал. Збережіть свіжу копію в телефон або на Google Диск.
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px; flex-shrink:0;">
+                <button class="btn btn-sm" style="background:white; color:#ea580c;" onclick="saveBackupToPhoneDownload()">📱 В телефон</button>
+                <button class="btn btn-sm" style="background:#0f766e; color:white;" onclick="shareBackupToCloud()">☁️ На Диск</button>
+            </div>
+        </div>
+
+        <!-- ACTIVE REMINDERS BANNER -->
+        <div id="activeRemindersBanner" style="display:none;" class="card"></div>
+
+        <!-- TAB 1: FAMILY MEMBERS -->
+        <div id="tab-members" class="tab-content">
+            <button class="btn" onclick="openMemberModal()">➕ Додати члена родини</button>
+            <div id="members-list" style="margin-top: 14px;"></div>
+        </div>
+
+        <!-- TAB 2: VISITS & HOME ILLNESSES -->
+        <div id="tab-visits" class="tab-content" style="display: none;">
+            <div class="form-row" style="margin-bottom: 10px;">
+                <button class="btn" onclick="openVisitModal()" style="margin-top:0;">🩺 Візит до лікаря</button>
+                <button class="btn btn-teal" onclick="openHomeIllnessModal()" style="margin-top:0;">🏠 Домашня недуга</button>
+            </div>
+            
+            <div class="card">
+                <div class="search-wrapper">
+                    <label>🔍 Розумний пошук (дата: 2025, 2024.10, лікар, діагноз, #хештег)</label>
+                    <div class="input-clear-wrap">
+                        <input type="text" id="searchQuery" placeholder="Напр. 2025, 2024.10, кардіолог, #рентген..." onfocus="showSearchHistory()" oninput="onSearchInput()" onchange="saveSearchQuery(this.value)">
+                        <button type="button" class="clear-input-btn" id="clearSearchBtn" onclick="clearSearchInput()">✖</button>
+                    </div>
+                    <div id="searchHistoryBox" class="search-history-box"></div>
+                </div>
+
+                <div class="chips-container" id="quickFilterTags"></div>
+                
+                <div class="form-row">
+                    <div>
+                        <label>Член родини</label>
+                        <select id="filterMember" onchange="renderVisits()"><option value="">Усі</option></select>
+                    </div>
+                    <div>
+                        <label>Рік</label>
+                        <select id="filterYear" onchange="renderVisits()"><option value="">Усі роки</option></select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div>
+                        <label>Тип запису</label>
+                        <select id="filterType" onchange="renderVisits()" style="margin-bottom:0;">
+                            <option value="">Усі записи</option>
+                            <option value="doctor">🩺 Візити до лікаря</option>
+                            <option value="home">🏠 Домашнє лікування</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Сортування</label>
+                        <select id="sortOrder" onchange="renderVisits()" style="margin-bottom:0;">
+                            <option value="desc">Новіші зверху</option>
+                            <option value="asc">Старіші зверху</option>
+                            <option value="cost_desc">Найдорожчі ₴</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div id="visits-list"></div>
+        </div>
+
+        <!-- TAB 3: MEDICATION TRACKER & HOME PHARMACY CABINET -->
+        <div id="tab-meds" class="tab-content" style="display: none;">
+            <div class="sub-tabs">
+                <div class="sub-tab active" id="subTabBtnTracker" onclick="switchMedSubTab('tracker')">📅 Трекер прийому</div>
+                <div class="sub-tab" id="subTabBtnCabinet" onclick="switchMedSubTab('cabinet')">🧰 Домашня аптечка</div>
+            </div>
+
+            <div id="med-sub-tracker">
+                <button class="btn btn-purple" onclick="openMedModal()" style="margin-top:0; margin-bottom:12px;">➕ Призначити курс ліків / Вітамінів</button>
+
+                <div class="date-navigator">
+                    <button class="date-nav-btn" onclick="shiftMedDate(-1)">◀</button>
+                    <div style="text-align:center;" onclick="triggerDatePicker('medTrackerDate')">
+                        <div style="font-size:0.75rem; color:var(--text-light); font-weight:700;">ВІДМІТКА ПРИЙОМУ ЗА ДАТУ:</div>
+                        <input type="date" id="medTrackerDate" onclick="triggerDatePicker('medTrackerDate')" onchange="renderMeds()" style="margin:2px 0 0 0; padding:4px 8px; font-weight:800; font-size:0.95rem; text-align:center; border:none; background:transparent; width:auto; cursor:pointer;">
+                    </div>
+                    <button class="date-nav-btn" onclick="shiftMedDate(1)">▶</button>
+                </div>
+
+                <div class="form-row" style="margin-bottom:10px;">
+                    <div>
+                        <select id="medFilterMember" onchange="renderMeds()" style="margin:0;"><option value="">👨‍👩‍👧‍👦 Усі члени родини</option></select>
+                    </div>
+                    <div>
+                        <select id="medFilterStatus" onchange="renderMeds()" style="margin:0;">
+                            <option value="active">🟢 Активні курси</option>
+                            <option value="completed">🗄 Завершені / Архів</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="meds-list"></div>
+            </div>
+
+            <div id="med-sub-cabinet" style="display:none;">
+                <button class="btn btn-teal" onclick="openCabinetModal()" style="margin-top:0; margin-bottom:12px;">➕ Додати ліки в домашню аптечку</button>
+
+                <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom:12px;">
+                    <div class="stat-box" style="padding:8px;">
+                        <h4 id="cabStatTotal" style="font-size:1.15rem;">0</h4>
+                        <p style="font-size:0.7rem;">Усього в аптечці</p>
+                    </div>
+                    <div class="stat-box" style="padding:8px;">
+                        <h4 id="cabStatExpiring" style="font-size:1.15rem; color:var(--warning);">0</h4>
+                        <p style="font-size:0.7rem;">Скоро вийде термін</p>
+                    </div>
+                    <div class="stat-box" style="padding:8px;">
+                        <h4 id="cabStatExpired" style="font-size:1.15rem; color:var(--danger);">0</h4>
+                        <p style="font-size:0.7rem;">Прострочено!</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <label>🔍 Пошук в аптечці (назва, від чого, де лежить)</label>
+                    <input type="text" id="cabSearchQuery" placeholder="Напр. нурофен, від температури, краплі..." oninput="renderCabinet()">
+                    <div class="form-row">
+                        <div>
+                            <label>Категорія</label>
+                            <select id="cabFilterCat" onchange="renderCabinet()" style="margin-bottom:0;">
+                                <option value="">Усі категорії</option>
+                                <option value="🌡 Жарознижувальне / Застуда">🌡 Жарознижувальне / Застуда</option>
+                                <option value="💊 Знеболювальне / Спазми">💊 Знеболювальне / Спазми</option>
+                                <option value="🤢 Шлунок / Травлення">🤢 Шлунок / Травлення</option>
+                                <option value="🩹 Антисептики / Перев'язка">🩹 Антисептики / Перев'язка</option>
+                                <option value="🤧 Алергія">🤧 Алергія</option>
+                                <option value="👂 Очі / Вуха / Ніс">👂 Очі / Вуха / Ніс</option>
+                                <option value="❤️ Серце / Тиск">❤️ Серце / Тиск</option>
+                                <option value="🧴 Мазі / Гелі">🧴 Мазі / Гелі</option>
+                                <option value="🦠 Антибіотики">🦠 Антибіотики</option>
+                                <option value="🍓 Вітаміни / Інше">🍓 Вітаміни / Інше</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Термін придатності</label>
+                            <select id="cabFilterExp" onchange="renderCabinet()" style="margin-bottom:0;">
+                                <option value="all">Усі препарати</option>
+                                <option value="ok">🟢 Тільки придатні</option>
+                                <option value="expiring">🟡 Скоро виходить термін</option>
+                                <option value="expired">🔴 Прострочені (на викид)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="cabinet-list"></div>
+            </div>
+        </div>
+
+        <!-- TAB 4: DOCTORS & CLINICS DIRECTORY -->
+        <div id="tab-doctors" class="tab-content" style="display: none;">
+            <button class="btn" onclick="openDoctorModal()" style="margin-top:0; margin-bottom:12px;">➕ Додати лікаря / клініку в довідник</button>
+
+            <div class="card">
+                <label>🔍 Пошук лікаря (спеціалізація, ПІБ, клініка, телефон)</label>
+                <div class="input-clear-wrap">
+                    <input type="text" id="docDirSearchQuery" placeholder="Напр. педіатр, стоматолог, Коваленко, Меділабс..." oninput="renderDoctorsDirectory()" style="margin-bottom:0;">
+                    <button type="button" class="clear-input-btn" style="display:flex;" onclick="document.getElementById('docDirSearchQuery').value=''; renderDoctorsDirectory();">✖</button>
+                </div>
+            </div>
+
+            <div id="doctors-directory-list"></div>
+        </div>
+
+        <!-- TAB 5: DOCUMENTS ARCHIVE -->
+        <div id="tab-docs" class="tab-content" style="display: none;">
+            <div class="card">
+                <h3>📁 Галерея аналізів, виписок та знімків</h3>
+                <label>Пошук за назвою, датою (2025, 2024.10) або #хештегом</label>
+                <div class="input-clear-wrap">
+                    <input type="text" id="docSearchQuery" placeholder="Введіть #аналізи, #рентген, 2025..." oninput="renderDocumentsArchive()">
+                    <button type="button" class="clear-input-btn" style="display:flex;" onclick="document.getElementById('docSearchQuery').value=''; renderDocumentsArchive();">✖</button>
+                </div>
+                <div class="chips-container" id="docQuickTags"></div>
+                <label>Фільтр по члену родини</label>
+                <select id="docFilterMember" onchange="renderDocumentsArchive()"><option value="">Усі члени родини</option></select>
+            </div>
+            <div id="documents-archive-list"></div>
+        </div>
+
+        <!-- TAB 6: TIMELINE -->
+        <div id="tab-timeline" class="tab-content" style="display: none;">
+            <div class="card">
+                <h3>🌳 Хронологічне дерево здоров'я</h3>
+                <label>Оберіть члена родини</label>
+                <select id="timelineMemberSelect" onchange="renderTimeline()"></select>
+            </div>
+            <div id="timeline-content" style="margin-top: 10px;"></div>
+        </div>
+
+        <!-- TAB 7: ANALYTICS & FINANCES -->
+        <div id="tab-analytics" class="tab-content" style="display: none;">
+            <div class="card">
+                <h3>🎛 Фільтри аналітики та витрат</h3>
+                <div class="form-row">
+                    <div>
+                        <label>Член родини</label>
+                        <select id="analyticsMember" onchange="renderAnalytics()"><option value="">Уся сім'я</option></select>
+                    </div>
+                    <div>
+                        <label>Період</label>
+                        <select id="analyticsPeriod" onchange="renderAnalytics()">
+                            <option value="all">За весь час</option>
+                            <option value="30">Останні 30 днів</option>
+                            <option value="180">Останні 6 місяців</option>
+                            <option value="365">Останній рік</option>
+                            <option value="year_current">Поточний рік</option>
+                        </select>
+                    </div>
+                </div>
+                <label>Фільтр за лікарем / діагнозом / роком (напр. 2025)</label>
+                <input type="text" id="analyticsQuery" placeholder="Напр. стоматолог, грип або 2025..." oninput="renderAnalytics()" style="margin-bottom:0;">
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <h4 id="anTotalSpent" style="color:var(--warning);">0 ₴</h4>
+                    <p>💰 Загальні витрати</p>
+                </div>
+                <div class="stat-box">
+                    <h4 id="anTotalEvents">0</h4>
+                    <p>📋 Усього записів (Лікар / Дім)</p>
+                </div>
+                <div class="stat-box">
+                    <h4 id="anDoctorSpent" style="color:var(--primary);">0 ₴</h4>
+                    <p>🩺 На лікарів та аналізи</p>
+                </div>
+                <div class="stat-box">
+                    <h4 id="anMedsSpent" style="color:var(--teal);">0 ₴</h4>
+                    <p>💊 На ліки в аптеках</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>👨‍👩‍👧‍👦 Витрати та хвороби по членах сім'ї</h3>
+                <div id="analyticsMembersBars" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="card">
+                <h3>💸 Найдорожчі діагнози / статті витрат</h3>
+                <div id="analyticsCostDiagnosesBars" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="card">
+                <h3>📊 Найчастіші причини звернень / хвороби</h3>
+                <div id="analyticsFreqDiagnosesBars" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="card">
+                <h3>📅 Динаміка по місяцях (Кількість + Витрати)</h3>
+                <div id="analyticsMonthlyBars" style="margin-top: 10px;"></div>
+            </div>
+        </div>
+
+        <!-- TAB 8: SETTINGS, PIN, BACKUP & MIGRATION CENTER -->
+        <div id="tab-settings" class="tab-content" style="display: none;">
+            <div class="card" style="border: 2px solid var(--primary);">
+                <h3>☁️ Резервне копіювання (Телефон + Google Диск)</h3>
+                <p id="lastBackupInfo" style="font-weight:700; color:var(--primary); margin-bottom:8px;">Останній бекап: ще не виконувався</p>
+
+                <label>⏰ Інтервал автоматичного контролю та бекапу</label>
+                <select id="backupIntervalSelect" onchange="saveBackupInterval(this.value)">
+                    <option value="0">Вимкнено (тільки вручну)</option>
+                    <option value="1">Щодня (кожні 24 години)</option>
+                    <option value="7">Раз на тиждень (кожні 7 днів)</option>
+                    <option value="14">Раз на 2 тижні (кожні 14 днів)</option>
+                    <option value="30">Раз на місяць (кожні 30 днів)</option>
+                </select>
+
+                <div class="form-row">
+                    <button class="btn" onclick="saveBackupToPhoneDownload()">📱 У телефон (Download)</button>
+                    <button class="btn btn-teal" onclick="shareBackupToCloud()">☁️ На Google Диск</button>
+                </div>
+                <p style="font-size:0.78rem; margin-top:8px;">
+                    ✅ <b>«📱 У телефон (Download)»</b> — записує файл бази <code>.json</code> у папку <b>Завантаження (Download)</b>.<br>
+                    ✅ <b>«☁️ На Google Диск»</b> — відкриває системне меню Android: оберіть <b>Диск (Google Drive)</b>!
+                </p>
+
+                <div class="divider"></div>
+                <label>⬆️ Швидке відновлення бази з файлу (.json)</label>
+                <button class="btn btn-secondary" onclick="triggerImportMode('replace')">📂 Відновити базу з файлу Backup (.json)</button>
+                <input type="file" id="importFile" accept=".json,application/json,text/plain,*/*" style="display: none;" onchange="importData(event)">
+            </div>
+
+            <div class="card" style="border: 2px solid var(--purple);">
+                <h3>📦 Центр перенесення та Виписка (PDF / Друк)</h3>
+                <p>Інструменти для переїзду на новий смартфон, об'єднання баз із телефоном дружини/чоловіка або друку гарної табличної виписки для лікаря.</p>
+                <button class="btn btn-purple" onclick="openMigrationModal()">🚀 Відкрити Майстер перенесення на новий телефон</button>
+                <div class="form-row" style="margin-top:6px;">
+                    <button class="btn btn-teal btn-sm" style="flex:1;" onclick="openPrintableReportModal()">🖨️ Виписка (PDF / Друк)</button>
+                    <button class="btn btn-outline btn-sm" style="flex:1;" onclick="triggerImportMode('merge')">➕ Об'єднати 2 бази</button>
+                </div>
+            </div>
+
+            <div class="card" style="border: 2px solid var(--teal);">
+                <h3>🔐 Захист входу (PIN-код)</h3>
+                <p id="pinStatusText">Статус: Захист PIN-кодом вимкнено</p>
+                <div class="form-row" style="margin-top:8px;">
+                    <button class="btn btn-teal btn-sm" style="flex:1;" onclick="setupOrChangePin()">🔑 Встановити / Змінити PIN</button>
+                    <button class="btn btn-danger btn-sm" style="flex:1;" id="disablePinBtn" onclick="disablePinLock()">🔓 Вимкнути PIN</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>🎨 Зовнішній вигляд та Налаштування</h3>
+                <div style="display:flex; justify-content:space-between; align-items:center; padding: 8px 0;">
+                    <span><b>Темна тема (Нічний режим)</b></span>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleTheme()" id="themeToggleText">Перемкнути</button>
+                </div>
+                <div class="divider"></div>
+                <label>🏷️ Додати власний сімейний #хештег у швидкий список</label>
+                <div class="form-row">
+                    <input type="text" id="newCustomTagInput" placeholder="напр. #алергія або #зуби" style="margin:0;">
+                    <button class="btn btn-sm" onclick="addCustomTag()" style="width:120px;">Додати</button>
+                </div>
+                <div id="customTagsManageList" class="chips-container" style="margin-top:8px;"></div>
+                <div class="divider"></div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span><b>Історія пошукових запитів</b></span>
+                    <button class="btn btn-danger btn-sm" onclick="clearSearchHistory()">Очистити історію</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>❓ Посібник користувача та Довідка</h3>
+                <button class="btn btn-outline" onclick="openHelpModal()">📖 Відкрити повну довідку по програмі</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- FULL-SCREEN INTERACTIVE MEDIA VIEWER -->
+    <div id="mediaViewerModal">
+        <div class="viewer-topbar">
+            <div class="viewer-title-box" id="viewerTitleText">Перегляд файлу</div>
+            <button class="v-ctrl-btn" style="background:var(--danger); border:none;" onclick="closeModals()">✖ Закрити</button>
+        </div>
+
+        <div class="viewer-stage" id="viewerStage"></div>
+
+        <div class="viewer-bottombar">
+            <div class="viewer-controls-row" id="viewerZoomControls">
+                <button class="v-ctrl-btn" onclick="adjustViewerZoom(-0.5)">➖ Зменшити</button>
+                <button class="v-ctrl-btn" id="zoomLevelIndicator" onclick="resetViewerZoom()">100%</button>
+                <button class="v-ctrl-btn" onclick="adjustViewerZoom(0.6)">➕ Збільшити</button>
+            </div>
+            <div class="viewer-controls-row">
+                <button class="v-ctrl-btn" style="background:var(--primary); border:none;" onclick="openCurrentMediaExternally()">📱 Відкрити в іншому додатку</button>
+                <button class="v-ctrl-btn" style="background:var(--teal); border:none;" onclick="shareCurrentMedia()">📤 Поділитися</button>
+                <button class="v-ctrl-btn" style="background:var(--purple); border:none;" onclick="downloadCurrentMedia()">⬇️ Скачати в Download</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: PRINTABLE HTML / PDF REPORT -->
+    <div id="printableReportModal" class="modal">
+        <div class="modal-content" style="max-width: 680px;">
+            <div class="no-print">
+                <h3>🖨️ Медична виписка (Друк / Збереження в PDF)</h3>
+                <div class="form-row" style="margin-top:8px;">
+                    <div>
+                        <label>Оберіть члена родини</label>
+                        <select id="reportMemberSelect" onchange="generatePrintableReportHTML()"><option value="">Уся сім'я</option></select>
+                    </div>
+                </div>
+                <div class="form-row" style="margin-bottom:12px;">
+                    <button class="btn btn-sm" style="flex:1; padding:10px;" onclick="printOrSavePdfReport()">🖨️ Друк / Зберегти як PDF</button>
+                    <button class="btn btn-teal btn-sm" style="flex:1; padding:10px;" onclick="shareHtmlReportFile()">📤 Переслати файл виписки</button>
+                </div>
+                <div class="divider"></div>
+            </div>
+
+            <div id="printableReportContainer"></div>
+
+            <div class="no-print" style="margin-top:14px;">
+                <button class="btn btn-secondary" onclick="closeModals()">Закрити (Назад)</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD/EDIT DOCTOR IN DIRECTORY -->
+    <div id="doctorModal" class="modal">
+        <div class="modal-content">
+            <h3 id="docModalTitle">📇 Додати лікаря в довідник</h3>
+            <input type="hidden" id="docEditId">
+
+            <label>ПІБ лікаря *</label>
+            <input type="text" id="docName" placeholder="напр. Коваленко Сергій Миколайович">
+
+            <div class="form-row">
+                <div>
+                    <label>Спеціалізація *</label>
+                    <input type="text" id="docSpec" placeholder="напр. Педіатр, Стоматолог, Кардіолог">
+                </div>
+                <div>
+                    <label>Клініка / Лікарня</label>
+                    <input type="text" id="docClinic" placeholder="напр. Меділабс, Поліклініка №1">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div>
+                    <label>📞 Телефон</label>
+                    <input type="tel" id="docPhone" placeholder="напр. +380671234567">
+                </div>
+                <div>
+                    <label>📍 Кабінет / Адреса / Графік</label>
+                    <input type="text" id="docSchedule" placeholder="напр. Каб. 204, Пн-Пт 9:00-15:00">
+                </div>
+            </div>
+
+            <label>📝 Примітки (вартість прийому, враження, рекомендації)</label>
+            <textarea id="docNotes" rows="2" placeholder="напр. Дуже уважний фахівець, запис за тиждень..."></textarea>
+
+            <button class="btn" onclick="saveDoctorToDirectory()">✅ Зберегти контакт лікаря</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: MIGRATION & EXPORT CENTER -->
+    <div id="migrationModal" class="modal">
+        <div class="modal-content">
+            <h3>📦 Майстер перенесення даних на новий телефон</h3>
+            <p style="font-size:0.85rem; color:var(--text-light); margin-bottom:12px;">Оберіть зручний спосіб передачі всієї сімейної бази (разом із фото, аудіо, лікарями та аптечкою) на інший пристрій:</p>
+
+            <div class="help-section">
+                <h4><span class="step-badge">1</span> На СТАРОМУ телефоні (Експорт)</h4>
+                <p>Вивантажте базу одним із трьох способів:</p>
+                <div class="form-row">
+                    <button class="btn btn-teal btn-sm" style="flex:1; padding:10px;" onclick="shareBackupToCloud()">☁️ Переслати (Google Диск / QuickShare / Telegram)</button>
+                    <button class="btn btn-sm" style="flex:1; padding:10px;" onclick="saveBackupToPhoneDownload()">📱 Зберегти в папку Download</button>
+                </div>
+                <button class="btn btn-outline btn-sm" style="width:100%; margin-top:8px;" onclick="copyBackupToClipboard()">📋 Або скопіювати весь код бази в буфер обміну</button>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="step-badge">2</span> На НОВОМУ телефоні (Імпорт / Відновлення)</h4>
+                <p>Встановіть додаток на новий телефон і завантажте збережений файл:</p>
+                <div class="form-row">
+                    <button class="btn btn-success btn-sm" style="flex:1; padding:10px;" onclick="triggerImportMode('replace')">🔄 Замінити базу з файлу (.json)</button>
+                    <button class="btn btn-purple btn-sm" style="flex:1; padding:10px;" onclick="triggerImportMode('merge')">➕ Об'єднати дві бази (без стирання)</button>
+                </div>
+                <label style="margin-top:10px;">Або вставте скопійований у буфер обміну код бази:</label>
+                <textarea id="pasteBackupArea" rows="3" placeholder="Вставте сюди скопійований JSON-код бази..." style="font-size:0.8rem; margin-bottom:6px;"></textarea>
+                <div class="form-row">
+                    <button class="btn btn-secondary btn-sm" style="flex:1;" onclick="restoreFromPastedText('replace')">Відновити з тексту (Замінити)</button>
+                    <button class="btn btn-secondary btn-sm" style="flex:1;" onclick="restoreFromPastedText('merge')">Додати з тексту (Об'єднати)</button>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h4>🖨️ Експорт виписки для лікаря (PDF / Друк / TXT)</h4>
+                <div class="form-row">
+                    <button class="btn btn-teal btn-sm" style="flex:1;" onclick="closeModals(); openPrintableReportModal();">🖨️ Таблична виписка (PDF/Друк)</button>
+                    <button class="btn btn-outline btn-sm" style="flex:1;" onclick="exportReadableReport()">📄 Простий текст (TXT)</button>
+                </div>
+            </div>
+
+            <button class="btn btn-secondary" onclick="closeModals()">Закрити (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD/EDIT MEMBER -->
+    <div id="memberModal" class="modal">
+        <div class="modal-content">
+            <h3 id="memberModalTitle">Новий член родини</h3>
+            <input type="hidden" id="mEditId">
+            
+            <label>Оберіть аватарку або завантажте фото</label>
+            <div class="emoji-grid" id="emojiPicker"></div>
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+                <div class="avatar-circle" id="mAvatarPreview">👨</div>
+                <div style="flex:1;">
+                    <input type="file" id="mPhotoInput" accept="image/*" onchange="handleMemberPhoto(this)" style="margin:0; padding:6px; font-size:0.8rem;">
+                    <small style="color:var(--text-light); font-size:0.75rem;">Можна обрати емодзі зверху або своє фото</small>
+                </div>
+            </div>
+
+            <label>ПІБ / Ім'я *</label>
+            <input type="text" id="mName" placeholder="напр. Олександр Анатолійович">
+            
+            <label>🎂 Дата народження (День / Місяць / Рік)</label>
+            <div class="form-row" style="gap:6px;">
+                <div style="flex:0.8;">
+                    <select id="mBirthDay" style="margin-top:4px;"></select>
+                </div>
+                <div style="flex:1.4;">
+                    <select id="mBirthMonth" style="margin-top:4px;"></select>
+                </div>
+                <div style="flex:1.1;">
+                    <select id="mBirthYear" style="margin-top:4px;"></select>
+                </div>
+            </div>
+
+            <label>🩸 Група крові та резус</label>
+            <select id="mBlood">
+                <option value="">— Не вказано —</option>
+                <option value="I+ (O+)">I+ (O+) перша позитивна</option>
+                <option value="I- (O-)">I- (O-) перша негативна</option>
+                <option value="II+ (A+)">II+ (A+) друга позитивна</option>
+                <option value="II- (A-)">II- (A-) друга негативна</option>
+                <option value="III+ (B+)">III+ (B+) третя позитивна</option>
+                <option value="III- (B-)">III- (B-) третя негативна</option>
+                <option value="IV+ (AB+)">IV+ (AB+) четверта позитивна</option>
+                <option value="IV- (AB-)">IV- (AB-) четверта негативна</option>
+            </select>
+
+            <label>⚠️ Алергії та непереносимість ліків</label>
+            <input type="text" id="mAllergies" placeholder="напр. Пеніцилін, пилок амброзії (або 'немає')">
+
+            <label>📌 Хронічні стани / Особливі примітки</label>
+            <textarea id="mChronic" rows="2" placeholder="напр. Носить окуляри, операція у 2019 році..."></textarea>
+
+            <button class="btn" onclick="saveMember()">✅ Зберегти профіль</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD/EDIT MEDICATION COURSE (TRACKER) -->
+    <div id="medModal" class="modal">
+        <div class="modal-content">
+            <h3 id="medModalTitle">💊 Призначити курс прийому ліків</h3>
+            <input type="hidden" id="medEditId">
+
+            <label>Член родини *</label>
+            <select id="medMemberId"></select>
+
+            <label>🧰 Або швидко обрати препарат зі своєї Домашньої аптечки</label>
+            <select id="medFromCabinetSelect" onchange="fillMedFromCabinet(this.value)">
+                <option value="">— Ввести вручну або обрати з аптечки —</option>
+            </select>
+
+            <label>Назва препарату / вітаміну *</label>
+            <input type="text" id="medName" placeholder="напр. Аугментин, Ібупрофен, Вітамін D3">
+
+            <div class="form-row">
+                <div>
+                    <label>Разове дозування</label>
+                    <input type="text" id="medDose" placeholder="1 таб. / 5 мл / 2 капс.">
+                </div>
+                <div>
+                    <label>Правило прийому</label>
+                    <select id="medRule">
+                        <option value="Після їжі">🍽 Після їжі</option>
+                        <option value="До їжі (за 30 хв)">⏳ До їжі (за 30 хв)</option>
+                        <option value="Під час їжі">🥗 Під час їжі</option>
+                        <option value="Незалежно від їжі">💧 Незалежно від їжі</option>
+                        <option value="Перед сном">🛌 Перед сном</option>
+                    </select>
+                </div>
+            </div>
+
+            <label>Коли приймати протягом дня? (оберіть потрібні часи) *</label>
+            <div style="margin: 6px 0 12px 0;">
+                <label class="slot-check-label"><input type="checkbox" class="med-slot-cb" value="🌅 Ранок" checked> 🌅 Ранок</label>
+                <label class="slot-check-label"><input type="checkbox" class="med-slot-cb" value="☀️ Обід"> ☀️ Обід</label>
+                <label class="slot-check-label"><input type="checkbox" class="med-slot-cb" value="🌆 Вечір" checked> 🌆 Вечір</label>
+                <label class="slot-check-label"><input type="checkbox" class="med-slot-cb" value="🌙 Ніч"> 🌙 Ніч</label>
+            </div>
+
+            <div class="form-row">
+                <div>
+                    <label>Дата початку курсу *</label>
+                    <input type="date" id="medStartDate" onclick="triggerDatePicker('medStartDate')">
+                </div>
+                <div>
+                    <label>Тривалість (днів) *</label>
+                    <input type="number" id="medDays" value="7" min="1" max="365">
+                </div>
+            </div>
+
+            <label>Примітка / При якій хворобі</label>
+            <input type="text" id="medNotes" placeholder="напр. Запивати великою кількістю води">
+
+            <button class="btn btn-purple" onclick="saveMedCourse()">✅ Зберегти курс лікування</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: ADD/EDIT HOME CABINET MEDICINE -->
+    <div id="cabinetModal" class="modal">
+        <div class="modal-content">
+            <h3 id="cabModalTitle">🧰 Додати ліки в домашню аптечку</h3>
+            <input type="hidden" id="cabEditId">
+
+            <label>Назва препарату та форма випуску *</label>
+            <input type="text" id="cabName" placeholder="напр. Нурофен Форте сироп, Цитрамон, Бетадин">
+
+            <label>Категорія / Призначення</label>
+            <select id="cabCategory">
+                <option value="🌡 Жарознижувальне / Застуда">🌡 Жарознижувальне / Застуда</option>
+                <option value="💊 Знеболювальне / Спазми">💊 Знеболювальне / Спазми</option>
+                <option value="🤢 Шлунок / Травлення">🤢 Шлунок / Травлення</option>
+                <option value="🩹 Антисептики / Перев'язка">🩹 Антисептики / Перев'язка</option>
+                <option value="🤧 Алергія">🤧 Алергія</option>
+                <option value="👂 Очі / Вуха / Ніс">👂 Очі / Вуха / Ніс</option>
+                <option value="❤️ Серце / Тиск">❤️ Серце / Тиск</option>
+                <option value="🧴 Мазі / Гелі">🧴 Мазі / Гелі</option>
+                <option value="🦠 Антибіотики">🦠 Антибіотики</option>
+                <option value="🍓 Вітаміни / Інше">🍓 Вітаміни / Інше</option>
+            </select>
+
+            <label>📅 Придатний ДО (Місяць та Рік) *</label>
+            <div class="form-row">
+                <div>
+                    <select id="cabExpMonth"></select>
+                </div>
+                <div>
+                    <select id="cabExpYear"></select>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div>
+                    <label>Скільки залишилося</label>
+                    <input type="text" id="cabQty" placeholder="напр. 12 таб. / Пів флакона">
+                </div>
+                <div>
+                    <label>Де зберігається вдома?</label>
+                    <input type="text" id="cabLocation" placeholder="напр. Коробка на кухні">
+                </div>
+            </div>
+
+            <label>Від чого / Інструкція / Дозування своїми словами</label>
+            <textarea id="cabNotes" rows="2" placeholder="напр. Дитині по 5 мл при температурі вище 38.5..."></textarea>
+
+            <button class="btn btn-teal" onclick="saveCabinetItem()">✅ Зберегти в аптечку</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: DOCTOR VISIT -->
+    <div id="visitModal" class="modal">
+        <div class="modal-content">
+            <h3 id="visitModalTitle">🩺 Візит до лікаря / Обстеження</h3>
+            <input type="hidden" id="vEditId">
+            
+            <div class="form-row">
+                <div>
+                    <label>Член родини *</label>
+                    <select id="vMemberId"></select>
+                </div>
+                <div>
+                    <label>Дата візиту *</label>
+                    <input type="date" id="vDate" onclick="triggerDatePicker('vDate')">
+                </div>
+            </div>
+
+            <label>📇 Швидкий вибір зі збережених лікарів (необов'язково)</label>
+            <select id="vSavedDoctorSelect" onchange="fillVisitFromDirectory(this.value)">
+                <option value="">— Ввести вручну або обрати з довідника —</option>
+            </select>
+
+            <div class="form-row">
+                <div>
+                    <label>Спеціалізація та ПІБ лікаря *</label>
+                    <input type="text" id="vDoctor" placeholder="Кардіолог Коваленко С.М.">
+                </div>
+                <div>
+                    <label>Клініка / Лабораторія</label>
+                    <input type="text" id="vClinic" placeholder="Меділабс / Поліклініка №1">
+                </div>
+            </div>
+
+            <label>Скарги / Причина звернення</label>
+            <textarea id="vReason" rows="2" placeholder="Що турбувало, які симптоми..."></textarea>
+
+            <label>Поставлений діагноз / Висновок</label>
+            <input type="text" id="vDiagnosis" placeholder="напр. Гострий бронхіт / Профогляд">
+
+            <label>💊 Призначене лікування та рекомендації</label>
+            <textarea id="vTreatment" rows="3" placeholder="Назви препаратів, дозування, скільки днів приймати..."></textarea>
+
+            <div class="card" style="background:var(--bg); padding:12px; margin: 8px 0;">
+                <label style="margin-top:0; color:var(--text);">💰 Бухгалтерія візиту (грн)</label>
+                <div class="form-row">
+                    <div>
+                        <label>Прийом / Аналізи (₴)</label>
+                        <input type="number" id="vCostDoctor" placeholder="0" min="0" style="margin-bottom:0;">
+                    </div>
+                    <div>
+                        <label>Куплені ліки в аптеці (₴)</label>
+                        <input type="number" id="vCostMeds" placeholder="0" min="0" style="margin-bottom:0;">
+                    </div>
+                </div>
+            </div>
+
+            <label>🏷️ Хештеги запису (натисніть для швидкого вибору)</label>
+            <input type="text" id="vTags" placeholder="#аналізи #профогляд">
+            <div id="vTagChips" class="chips-container"></div>
+
+            <div class="divider"></div>
+            <label>📎 Фото виписок, рентгену, PDF-аналізів або відео</label>
+            <input type="file" id="vMediaFilePicker" accept="image/*,video/*,application/pdf" multiple onchange="addNewMediaItem(this, 'vMediaItemsList')">
+            <div id="vMediaItemsList"></div>
+
+            <div class="divider"></div>
+            <label>🎙 Запис прийому лікаря (Диктофон або аудіофайл)</label>
+            <div class="form-row" style="margin-bottom:8px;">
+                <button type="button" class="btn btn-purple btn-sm" id="recordAudioBtn" onclick="toggleVoiceRecording()" style="flex:1; padding:10px;">🔴 Записати на диктофон</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('vAudioFiles').click()" style="flex:1; padding:10px;">📂 Вибрати аудіофайл</button>
+            </div>
+            <input type="file" id="vAudioFiles" accept="audio/*" multiple style="display:none;">
+            <div id="recordingStatus" style="display:none; color:var(--danger); font-weight:bold; font-size:0.85rem; text-align:center; margin-bottom:8px;">⏱ Триває запис... Говоріть!</div>
+            <div id="vAudioPreview"></div>
+            
+            <button class="btn" onclick="saveVisit()" style="margin-top:16px;">✅ Зберегти візит</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <!-- MODAL: HOME ILLNESS -->
+    <div id="homeIllnessModal" class="modal">
+        <div class="modal-content">
+            <h3 id="hModalTitle">🏠 Домашня недуга (Без лікаря)</h3>
+            <input type="hidden" id="hEditId">
+            
+            <div class="form-row">
+                <div>
+                    <label>Член родини *</label>
+                    <select id="hMemberId"></select>
+                </div>
+                <div>
+                    <label>Дата початку *</label>
+                    <input type="date" id="hDate" onclick="triggerDatePicker('hDate')">
+                </div>
+            </div>
+
+            <label>Що сталося? (Назва недуги / Стан) *</label>
+            <input type="text" id="hDiagnosis" placeholder="напр. Застуда, Герпес на губі, Температура 38.2">
+
+            <label>Симптоми та перебіг (скільки днів тривало)</label>
+            <textarea id="hReason" rows="2" placeholder="Нежить, біль у горлі, тривало 4 дні..."></textarea>
+
+            <label>💊 Чим лікували вдома (Препарати, процедури)</label>
+            <textarea id="hTreatment" rows="2" placeholder="Ацикловір мазь, парацетамол, гарячий чай..."></textarea>
+
+            <label>💰 Витрати на ліки в аптеці (грн)</label>
+            <input type="number" id="hCostMeds" placeholder="0" min="0">
+
+            <label>🏷️ Хештеги (натисніть, щоб додати)</label>
+            <input type="text" id="hTags" placeholder="#самолікування #продуло">
+            <div id="hTagChips" class="chips-container"></div>
+
+            <label>📎 Фото або PDF (напр. висипка, термометр, чек чи інструкція)</label>
+            <input type="file" id="hMediaFilePicker" accept="image/*,video/*,application/pdf" multiple onchange="addNewMediaItem(this, 'hMediaItemsList')">
+            <div id="hMediaItemsList"></div>
+            
+            <button class="btn btn-teal" onclick="saveHomeIllness()" style="margin-top:16px;">✅ Зберегти запис</button>
+            <button class="btn btn-secondary" onclick="closeModals()">Скасувати (Назад)</button>
+        </div>
+    </div>
+
+    <div id="emergencyModal" class="modal center-modal">
+        <div class="modal-content" id="emergencyModalContent"></div>
+    </div>
+
+    <div id="confirmModal" class="modal center-modal">
+        <div class="modal-content" style="text-align:center;">
+            <div style="font-size:2.5rem; margin-bottom:8px;">⚠️</div>
+            <h3 id="confirmTitle">Підтвердження</h3>
+            <p id="confirmMessage" style="margin: 10px 0 18px 0; font-size:0.95rem;"></p>
+            <div class="form-row">
+                <button class="btn btn-secondary" onclick="closeConfirmModal()">Скасувати</button>
+                <button class="btn btn-danger" id="confirmYesBtn">Видалити</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="alarmPopupModal" class="modal center-modal">
+        <div class="modal-content" style="text-align:center; border:3px solid var(--purple);">
+            <div style="font-size:3.2rem; margin-bottom:6px;">⏰💊</div>
+            <h2 style="color:var(--purple); margin-bottom:8px;">Час прийняти ліки!</h2>
+            <p id="alarmPopupText" style="font-size:1.1rem; font-weight:700; margin-bottom:16px;"></p>
+            <button class="btn btn-purple" onclick="stopAlarmAndClose()">✅ Зрозуміло, приймаю!</button>
+        </div>
+    </div>
+
+    <!-- MODAL: COMPREHENSIVE HELP & USER GUIDE -->
+    <div id="helpModal" class="modal">
+        <div class="modal-content">
+            <h3>📖 Повна довідка «Сімейна Медкартка PRO»</h3>
+            <p style="font-size:0.84rem; color:var(--text-light); margin-bottom:12px;">Детальний посібник по всіх можливостях вашої приватної медичної бази.</p>
+
+            <div class="help-section">
+                <h4><span class="help-icon">👨‍👩‍👧‍👦</span> 1. Вкладка «Сім'я»</h4>
+                <ul>
+                    <li>Створюйте профілі для кожного члена родини: обирайте емодзі або завантажуйте фото, вказуйте дату народження, групу крові, алергії на ліки та хронічні стани.</li>
+                    <li><b>🆘 Картка для лікаря:</b> відкриває на весь екран велику шпаргалку з групою крові, алергіями та останніми діагнозами для швидкого показу на прийомі.</li>
+                    <li><b>🖨️ Виписка PDF:</b> формує офіційну табличну виписку по конкретному члену сім'ї для друку або пересилання лікарю.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">📋</span> 2. Вкладка «Журнал» (Візити та Домашнє лікування)</h4>
+                <ul>
+                    <li><b>Два типи записів:</b> фіксуйте як офіційні <code>🩺 Візити до лікаря</code>, так і <code>🏠 Домашні недуги</code> (застуда, температура тощо без візиту в клініку).</li>
+                    <li><b>🎙 Вбудований диктофон:</b> під час прийому натисніть <code>🔴 Записати на диктофон</code>, щоб не забути жодної поради лікаря.</li>
+                    <li><b>🔍 Розумний пошук за датами та тегами:</b> вводьте у пошук рік (напр. <code>2025</code>), рік і місяць (<code>2024.10</code> або <code>10.2024</code>), назву місяця (<code>жовтень</code>), прізвище лікаря чи натискайте на кольорові <code>#хештеги</code>.</li>
+                    <li><b>💊 В трекер в 1 клік:</b> кнопка <code>💊 В трекер</code> у картці візиту миттєво переносить призначені ліки у розклад прийому.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">💊</span> 3. Вкладка «Ліки й Аптечка»</h4>
+                <ul>
+                    <li><b>📅 Трекер прийому:</b> відмічайте випиті дози (Ранок, Обід, Вечір, Ніч). Встановлюйте швидкий таймер (<code>+4 год</code>, <code>+6 год</code>, <code>+8 год</code>) або натискайте <code>⏰ Будильник Android</code>, який виставить системний будильник телефона (спрацює навіть при вимкненому екрані).</li>
+                    <li><b>🧰 Домашня аптечка:</b> ведіть облік домашніх ліків, де вони лежать і скільки залишилося. Програма автоматично попередить про препарати, у яких скоро виходить термін (🟡) або які вже прострочені (🔴). З аптечки можна в 1 клік призначити препарат у трекер.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">📇</span> 4. Вкладка «Лікарі» (Довідник контактів)</h4>
+                <ul>
+                    <li>Зберігайте контакти перевірених спеціалістів: ПІБ, спеціалізацію, клініку, телефон, графік та кабінет.</li>
+                    <li>Телефонуйте в 1 клік (<code>📞 Подзвонити</code>), пишіть у <code>💬 Viber</code> чи <code>✈️ Telegram</code>, або натискайте <code>🩺 Створити візит</code> — і дані лікаря автоматично підставляться у новий запис журналу.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">📁</span> 5. Вкладка «Файли» (Фото, Офлайн-PDF та Відео)</h4>
+                <ul>
+                    <li><b>🔍 Збільшення дрібного шрифту:</b> натисніть на фото виписки — розводьте двома пальцями (Pinch-to-Zoom), натискайте двічі по екрану або кнопками <code>➕</code> / <code>➖</code> (масштабування до 800%).</li>
+                    <li><b>📄 Читання PDF без інтернету:</b> усі сторінки PDF-аналізів розгортаються прямо всередині додатка офлайн.</li>
+                    <li><b>📤 Поділитися / 📱 Відкрити / ⬇️ Скачати:</b> працюють для фото, багатосторінкових PDF, відео та аудіозаписів будь-якого розміру завдяки потоковій передачі даних.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">📊</span> 6. Вкладки «Історія» та «Аналітика»</h4>
+                <ul>
+                    <li><b>🌳 Історія:</b> наочне хронологічне дерево всіх подій здоров'я обраного члена родини.</li>
+                    <li><b>📊 Аналітика:</b> підраховує витрати окремо на лікарів/аналізи та на аптеки, показує найдорожчі й найчастіші діагнози та статистику по місяцях.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h4><span class="help-icon">⚙️</span> 7. Вкладка «Меню» (Бекап, Переїзд на новий телефон, PIN)</h4>
+                <ul>
+                    <li><b>☁️ Резервне копіювання:</b> зберігайте базу у папку <code>Download</code> або на <code>Google Диск</code> та налаштуйте автоматичне нагадування (раз на тиждень/місяць).</li>
+                    <li><b>📦 Майстер перенесення:</b> дозволяє легко перенести всю базу на новий смартфон або <b>об'єднати дві бази</b> (наприклад, із телефоном дружини/чоловіка) без стирання записів.</li>
+                    <li><b>🔐 PIN-код:</b> захистіть вхід у програму 4-значним паролем.</li>
+                </ul>
+            </div>
+
+            <button class="btn" onclick="closeModals()">Зрозуміло, дякую!</button>
+        </div>
+    </div>
