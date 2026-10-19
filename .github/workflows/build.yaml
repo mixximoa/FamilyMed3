@@ -1,0 +1,389 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ensure Android SDK 34 & 35 are installed
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0"
+
+      - name: Install Cordova
+        run: npm install -g cordova
+
+      - name: Create Cordova Project
+        run: |
+          cordova create myapp com.family.medcard FamilyMed
+          cd myapp
+          cordova platform add android
+
+      - name: Inject Permissions into AndroidManifest.xml
+        run: |
+          MANIFEST="myapp/platforms/android/app/src/main/AndroidManifest.xml"
+          sed -i 's|<application|<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.VIBRATE" />\n    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />\n    <application|g' "$MANIFEST"
+
+      - name: Inject Native Android Bridge into MainActivity.java
+        run: |
+          cat << 'EOF' > myapp/platforms/android/app/src/main/java/com/family/medcard/MainActivity.java
+          package com.family.medcard;
+
+          import android.Manifest;
+          import android.content.ContentValues;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.StrictMode;
+          import android.print.PrintAttributes;
+          import android.print.PrintDocumentAdapter;
+          import android.print.PrintManager;
+          import android.provider.AlarmClock;
+          import android.provider.MediaStore;
+          import android.util.Base64;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebView;
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import org.apache.cordova.*;
+
+          public class MainActivity extends CordovaActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
+                  StrictMode.setVmPolicy(builder.build());
+
+                  Bundle extras = getIntent().getExtras();
+                  if (extras != null && extras.getBoolean("cdvStartInBackground", false)) {
+                      moveTaskToBack(true);
+                  }
+                  loadUrl(launchUrl);
+                  try {
+                      WebView webView = (WebView) this.appView.getView();
+                      webView.getSettings().setJavaScriptEnabled(true);
+                      webView.getSettings().setAllowFileAccess(true);
+                      webView.getSettings().setDomStorageEnabled(true);
+                      webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+                      webView.addJavascriptInterface(new WebAppInterface(), "AndroidNative");
+
+                      webView.setWebChromeClient(new WebChromeClient() {
+                          @Override
+                          public void onPermissionRequest(final PermissionRequest request) {
+                              runOnUiThread(() -> request.grant(request.getResources()));
+                          }
+                      });
+                  } catch (Exception e) {
+                      e.printStackTrace();
+                  }
+              }
+
+              public class WebAppInterface {
+                  private ByteArrayOutputStream chunkStream = null;
+                  private String chunkFileName = "";
+                  private String chunkMimeType = "";
+                  private StringBuilder dbChunkBuilder = null;
+
+                  // --- НАДІЙНЕ НАТИВНЕ ЗБЕРЕЖЕННЯ БАЗИ ДАНИХ У ПАМ'ЯТЬ ANDROID ---
+                  @JavascriptInterface
+                  public String saveAppData(String jsonContent) {
+                      try {
+                          File file = new File(getFilesDir(), "family_med_db.json");
+                          FileOutputStream fos = new FileOutputStream(file);
+                          fos.write(jsonContent.getBytes(StandardCharsets.UTF_8));
+                          fos.flush();
+                          fos.close();
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String startAppDataSave() {
+                      dbChunkBuilder = new StringBuilder();
+                      return "OK";
+                  }
+
+                  @JavascriptInterface
+                  public String appendAppDataChunk(String chunk) {
+                      if (dbChunkBuilder == null) dbChunkBuilder = new StringBuilder();
+                      dbChunkBuilder.append(chunk);
+                      return "OK";
+                  }
+
+                  @JavascriptInterface
+                  public String finishAppDataSave() {
+                      try {
+                          if (dbChunkBuilder == null) return "ERR:Empty";
+                          String fullJson = dbChunkBuilder.toString();
+                          dbChunkBuilder = null;
+                          return saveAppData(fullJson);
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String loadAppData() {
+                      try {
+                          File file = new File(getFilesDir(), "family_med_db.json");
+                          if (!file.exists()) return "";
+                          byte[] bytes = Files.readAllBytes(file.toPath());
+                          return new String(bytes, StandardCharsets.UTF_8);
+                      } catch (Exception e) {
+                          return "";
+                      }
+                  }
+
+                  private Uri writeBytesToMediaStore(String fileName, byte[] dataBytes, String mimeType, String subFolder) throws Exception {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          String relPath = Environment.DIRECTORY_DOWNLOADS + (subFolder != null && !subFolder.isEmpty() ? "/" + subFolder : "");
+                          try {
+                              getContentResolver().delete(
+                                  MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                  MediaStore.Downloads.DISPLAY_NAME + "=?",
+                                  new String[]{ fileName }
+                              );
+                          } catch (Exception ignored) {}
+
+                          ContentValues values = new ContentValues();
+                          values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                          values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                          values.put(MediaStore.Downloads.RELATIVE_PATH, relPath);
+                          Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                          if (uri != null) {
+                              OutputStream out = getContentResolver().openOutputStream(uri);
+                              if (out != null) {
+                                  out.write(dataBytes);
+                                  out.flush();
+                                  out.close();
+                              }
+                              return uri;
+                          }
+                      }
+                      File baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                      File dir = (subFolder != null && !subFolder.isEmpty()) ? new File(baseDir, subFolder) : baseDir;
+                      if (!dir.exists()) dir.mkdirs();
+                      File file = new File(dir, fileName);
+                      FileOutputStream fos = new FileOutputStream(file);
+                      fos.write(dataBytes);
+                      fos.flush();
+                      fos.close();
+                      return Uri.fromFile(file);
+                  }
+
+                  private String executeFileActionWithBytes(String fileName, byte[] bytes, String mimeType, String actionType, String title) {
+                      try {
+                          if ("download".equals(actionType)) {
+                              writeBytesToMediaStore(fileName, bytes, mimeType, "");
+                              return "OK";
+                          } else if ("open".equals(actionType)) {
+                              Uri uri = writeBytesToMediaStore(fileName, bytes, mimeType, "MedCard_Temp");
+                              Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+                              viewIntent.setDataAndType(uri, mimeType);
+                              viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                              Intent chooser = Intent.createChooser(viewIntent, "Відкрити файл у додатку");
+                              chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(chooser);
+                              return "OK";
+                          } else if ("share".equals(actionType)) {
+                              Uri uri = writeBytesToMediaStore(fileName, bytes, mimeType, "MedCard_Temp");
+                              Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                              shareIntent.setType(mimeType);
+                              shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                              shareIntent.putExtra(Intent.EXTRA_SUBJECT, title != null ? title : fileName);
+                              shareIntent.putExtra(Intent.EXTRA_TEXT, title != null ? title : fileName);
+                              shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                              Intent chooser = Intent.createChooser(shareIntent, "Поділитися файлом");
+                              chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                              startActivity(chooser);
+                              return "OK";
+                          }
+                          return "ERR:Unknown action";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String startChunkedFile(String fileName, String mimeType) {
+                      try {
+                          chunkStream = new ByteArrayOutputStream();
+                          chunkFileName = fileName;
+                          chunkMimeType = mimeType;
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String appendFileChunk(String base64Chunk) {
+                      try {
+                          if (chunkStream == null) return "ERR:No active stream";
+                          byte[] decoded = Base64.decode(base64Chunk, Base64.DEFAULT);
+                          chunkStream.write(decoded);
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String finishChunkedFile(String actionType, String title) {
+                      try {
+                          if (chunkStream == null) return "ERR:No active stream";
+                          byte[] allBytes = chunkStream.toByteArray();
+                          chunkStream.close();
+                          chunkStream = null;
+                          return executeFileActionWithBytes(chunkFileName, allBytes, chunkMimeType, actionType, title);
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String requestMicPermission() {
+                      try {
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                              if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                  requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 101);
+                                  return "REQUESTED";
+                              }
+                          }
+                          return "GRANTED";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String setSystemAlarm(int hour, int minute, String message) {
+                      try {
+                          Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM);
+                          intent.putExtra(AlarmClock.EXTRA_HOUR, hour);
+                          intent.putExtra(AlarmClock.EXTRA_MINUTES, minute);
+                          intent.putExtra(AlarmClock.EXTRA_MESSAGE, message);
+                          intent.putExtra(AlarmClock.EXTRA_SKIP_UI, false);
+                          intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(intent);
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String printCurrentPage(String jobName) {
+                      try {
+                          runOnUiThread(() -> {
+                              try {
+                                  WebView webView = (WebView) appView.getView();
+                                  PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                                  PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter(jobName);
+                                  printManager.print(jobName, adapter, new PrintAttributes.Builder().build());
+                              } catch (Exception ex) {
+                                  ex.printStackTrace();
+                              }
+                          });
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String shareBackupFile(String fileName, String content) {
+                      try {
+                          String mime = fileName.endsWith(".html") ? "text/html" : (fileName.endsWith(".txt") ? "text/plain" : "application/json");
+                          Uri uri = writeBytesToMediaStore(fileName, content.getBytes(StandardCharsets.UTF_8), mime, "MedCard_Temp");
+                          Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                          shareIntent.setType(mime);
+                          shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                          shareIntent.putExtra(Intent.EXTRA_SUBJECT, fileName);
+                          shareIntent.putExtra(Intent.EXTRA_TEXT, "Сімейна Медкартка PRO (" + fileName + ")");
+                          shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                          Intent chooser = Intent.createChooser(shareIntent, "Зберегти або переслати файл");
+                          chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(chooser);
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+
+                  @JavascriptInterface
+                  public String saveBackupToPhone(String fileName, String content) {
+                      try {
+                          writeBytesToMediaStore(fileName, content.getBytes(StandardCharsets.UTF_8), "application/json", "");
+                          return "OK";
+                      } catch (Exception e) {
+                          return "ERR:" + e.getMessage();
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Create Medical App Icon & Set App Name
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick curl
+          convert -size 512x512 xc:"#0284c7" -fill "#ffffff" -draw "rectangle 206,96 306,416" -draw "rectangle 96,206 416,306" myapp/icon.png
+          sed -i 's|<name>FamilyMed</name>|<name>Медкартка PRO</name>|g' myapp/config.xml
+          sed -i 's|</widget>|  <icon src="icon.png" />\n</widget>|g' myapp/config.xml
+
+      - name: Merge 4 HTML Parts (or copy index.html) & Bundle Offline PDF.js
+        run: |
+          rm -rf myapp/www/*
+          if [ -f part1.html ] && [ -f part2.html ] && [ -f part3.html ] && [ -f part4.html ]; then
+            cat part1.html part2.html part3.html part4.html > myapp/www/index.html
+            cp myapp/www/index.html ./merged_index.html
+          else
+            cp index.html myapp/www/index.html
+            cp index.html ./merged_index.html
+          fi
+          PDF_URL="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174"
+          curl -sL "$PDF_URL/pdf.min.js" -o myapp/www/pdf.min.js
+          curl -sL "$PDF_URL/pdf.worker.min.js" -o myapp/www/pdf.worker.min.js
+
+      - name: Build Android APK (Debug)
+        run: |
+          cd myapp
+          cordova build android --debug
+
+      - name: Upload APK & Merged HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FamilyMed-PRO-APK-and-HTML
+          path: |
+            myapp/platforms/android/app/build/outputs/apk/debug/app-debug.apk
+            merged_index.html
