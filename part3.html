@@ -1,0 +1,1586 @@
+<script>
+        /* ==========================================
+           1. STATE, CONSTANTS & OFFLINE PDF WORKER
+        ========================================== */
+        function configurePdfWorker() {
+            if (window.pdfjsLib) {
+                window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+            }
+        }
+        configurePdfWorker();
+        window.addEventListener('load', configurePdfWorker);
+
+        const EMOJI_AVATARS = ['👨', '👩', '👦', '👧', '👴', '👵', '👶', '🧔', '👱‍♀️', '🦸‍♂️'];
+        const MONTHS_UK = ['Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень', 'Липень', 'Серпень', 'Вересень', 'Жовтень', 'Листопад', 'Грудень'];
+        const MONTHS_SEARCH_TOKENS = [
+            'січень січня', 'лютий лютого', 'березень березня', 'квітень квітня',
+            'травень травня', 'червень червня', 'липень липня', 'серпень серпня',
+            'вересень вересня', 'жовтень жовтня', 'листопад листопада', 'грудень грудня'
+        ];
+        
+        const DEFAULT_SERIOUS_TAGS = ['#аналізи', '#кров', '#рентген', '#УЗД', '#рецепт', '#педіатр', '#стоматолог', '#щеплення', '#профогляд', '#виписка', '#кардіолог', '#ЛОР'];
+        const DEFAULT_FUNNY_TAGS = ['#самолікування', '#продуло', '#психосоматика', '#вікове', '#іпохондрія', '#золота_аптека', '#хруснуло_в_спині', '#дитячий_садок'];
+
+        let dbData = { members: [], visits: [], medications: [], cabinet: [], doctors: [], reminders: [] };
+        let appSettings = JSON.parse(localStorage.getItem('med_pro_settings') || JSON.stringify({
+            theme: 'light',
+            customTags: [],
+            searchHistory: [],
+            backupIntervalDays: 7,
+            lastBackupTimestamp: null,
+            pinCode: ''
+        }));
+
+        let currentActiveTab = 'members';
+        let currentMedSubTab = 'tracker';
+        let ignoreNextPopState = false;
+        let currentImportMode = 'replace';
+
+        let selectedMemberAvatar = '👨';
+        let currentVisitMedia = [];
+        let currentVisitAudio = [];
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let alarmAudioInterval = null;
+
+        let pinEntered = '';
+        let pinMode = 'unlock';
+
+        let activeViewerMedia = null;
+        let currentBlobUrl = null;
+        let zoomScale = 1;
+        let panX = 0;
+        let panY = 0;
+        let startTouchDist = 0;
+        let startZoomScale = 1;
+        let isPanning = false;
+        let startPanX = 0;
+        let startPanY = 0;
+        let lastTapTime = 0;
+
+        document.getElementById('medTrackerDate').value = new Date().toISOString().split('T')[0];
+
+        function initDateDropdowns() {
+            let daySel = document.getElementById('mBirthDay');
+            let monthSel = document.getElementById('mBirthMonth');
+            let yearSel = document.getElementById('mBirthYear');
+
+            daySel.innerHTML = '<option value="">День</option>' + Array.from({length: 31}, (_, i) => {
+                let d = String(i + 1).padStart(2, '0');
+                return `<option value="${d}">${i + 1}</option>`;
+            }).join('');
+
+            monthSel.innerHTML = '<option value="">Місяць</option>' + MONTHS_UK.map((m, i) => {
+                let mv = String(i + 1).padStart(2, '0');
+                return `<option value="${mv}">${m}</option>`;
+            }).join('');
+
+            let curYear = new Date().getFullYear();
+            let yearsHtml = '<option value="">Рік</option>';
+            for (let y = curYear; y >= 1925; y--) {
+                yearsHtml += `<option value="${y}">${y}</option>`;
+            }
+            yearSel.innerHTML = yearsHtml;
+
+            let cabM = document.getElementById('cabExpMonth');
+            let cabY = document.getElementById('cabExpYear');
+            cabM.innerHTML = MONTHS_UK.map((m, i) => `<option value="${String(i+1).padStart(2,'0')}">${String(i+1).padStart(2,'0')} - ${m}</option>`).join('');
+            let cabYHtml = '';
+            for (let y = curYear - 2; y <= curYear + 10; y++) {
+                cabYHtml += `<option value="${y}">${y}</option>`;
+            }
+            cabY.innerHTML = cabYHtml;
+        }
+        initDateDropdowns();
+
+        function triggerDatePicker(inputId) {
+            let el = document.getElementById(inputId);
+            if (el && typeof el.showPicker === 'function') {
+                try { el.showPicker(); } catch (e) {}
+            }
+        }
+
+        function buildDateSearchTokens(isoDate) {
+            if (!isoDate || !isoDate.includes('-')) return isoDate || '';
+            let parts = isoDate.split('-');
+            let y = parts[0] || '';
+            let m = parts[1] || '';
+            let d = parts[2] || '';
+            let mIdx = parseInt(m, 10) - 1;
+            let mName = (mIdx >= 0 && mIdx < 12) ? MONTHS_SEARCH_TOKENS[mIdx] : '';
+            return `${isoDate} ${y} ${y}.${m} ${y}.${m}.${d} ${d}.${m}.${y} ${d}.${m} ${m}.${y} ${y}/${m}/${d} ${d}/${m}/${y} ${mName} ${mName} ${y}`;
+        }
+
+        /* ==========================================
+           2. PIN LOCK SYSTEM
+        ========================================== */
+        function checkInitialPinLock() {
+            if (appSettings.pinCode && appSettings.pinCode.length === 4) {
+                pinMode = 'unlock';
+                pinEntered = '';
+                updatePinDots();
+                document.getElementById('pinPromptText').innerText = 'Введіть 4-значний PIN-код для входу';
+                document.getElementById('pinLockOverlay').style.display = 'flex';
+            }
+            updatePinSettingsUI();
+        }
+
+        function updatePinDots() {
+            for (let i = 0; i < 4; i++) {
+                let dot = document.getElementById('pdot' + i);
+                if (dot) dot.classList.toggle('filled', i < pinEntered.length);
+            }
+        }
+
+        function pressPinDigit(d) {
+            if (pinEntered.length >= 4) return;
+            pinEntered += d;
+            updatePinDots();
+            if (pinEntered.length === 4) {
+                setTimeout(evaluatePinEntry, 120);
+            }
+        }
+
+        function backspacePinDigit() {
+            pinEntered = pinEntered.slice(0, -1);
+            updatePinDots();
+        }
+
+        function clearPinDigits() {
+            if (pinMode === 'setup') {
+                document.getElementById('pinLockOverlay').style.display = 'none';
+                pinEntered = '';
+                showToast('Встановлення PIN-коду скасовано', 'warning');
+                return;
+            }
+            pinEntered = '';
+            updatePinDots();
+        }
+
+        function evaluatePinEntry() {
+            if (pinMode === 'unlock') {
+                if (pinEntered === appSettings.pinCode) {
+                    document.getElementById('pinLockOverlay').style.display = 'none';
+                    pinEntered = '';
+                } else {
+                    pinEntered = '';
+                    updatePinDots();
+                    document.getElementById('pinPromptText').innerText = '❌ Невірний PIN-код! Спробуйте ще раз';
+                    if (navigator.vibrate) navigator.vibrate(300);
+                }
+            } else if (pinMode === 'setup') {
+                appSettings.pinCode = pinEntered;
+                saveSettings();
+                document.getElementById('pinLockOverlay').style.display = 'none';
+                pinEntered = '';
+                updatePinSettingsUI();
+                showToast('🔐 Новий PIN-код успішно встановлено!');
+            }
+        }
+
+        function setupOrChangePin() {
+            pinMode = 'setup';
+            pinEntered = '';
+            updatePinDots();
+            document.getElementById('pinPromptText').innerText = 'Придумайте новий 4-значний PIN (або натисніть «Стерти» для відміни)';
+            document.getElementById('pinLockOverlay').style.display = 'flex';
+        }
+
+        function disablePinLock() {
+            appSettings.pinCode = '';
+            saveSettings();
+            updatePinSettingsUI();
+            showToast('🔓 Захист PIN-кодом вимкнено', 'warning');
+        }
+
+        function updatePinSettingsUI() {
+            let st = document.getElementById('pinStatusText');
+            let btn = document.getElementById('disablePinBtn');
+            if (!st || !btn) return;
+            if (appSettings.pinCode && appSettings.pinCode.length === 4) {
+                st.innerHTML = 'Статус: <b style="color:var(--success);">🟢 Увімкнено (додаток захищено 4-значним PIN)</b>';
+                btn.style.display = 'inline-flex';
+            } else {
+                st.innerHTML = 'Статус: <b>Вимкнено</b> (вхід без пароля)';
+                btn.style.display = 'none';
+            }
+        }
+
+        /* ==========================================
+           3. ANDROID BACK GESTURE & MODAL HISTORY
+        ========================================== */
+        function isAnyModalOpen() {
+            if (document.getElementById('mediaViewerModal').style.display === 'flex') return true;
+            let modals = document.querySelectorAll('.modal');
+            for (let m of modals) {
+                if (m.style.display === 'flex' || m.style.display === 'block') return true;
+            }
+            return false;
+        }
+
+        function pushModalState() {
+            if (window.history && window.history.pushState) {
+                window.history.pushState({ modalOpen: true, tab: currentActiveTab }, '');
+            }
+        }
+
+        window.addEventListener('popstate', function(e) {
+            if (ignoreNextPopState) {
+                ignoreNextPopState = false;
+                return;
+            }
+            if (isAnyModalOpen()) {
+                closeModals(true);
+                return;
+            }
+            if (currentActiveTab !== 'members') {
+                switchTab('members', true);
+                window.history.pushState({ tab: 'members' }, '');
+            }
+        });
+
+        document.addEventListener('backbutton', function(e) {
+            if (isAnyModalOpen()) {
+                e.preventDefault();
+                closeModals(true);
+            } else if (currentActiveTab !== 'members') {
+                e.preventDefault();
+                switchTab('members', true);
+            } else {
+                if (navigator.app && navigator.app.exitApp) {
+                    navigator.app.exitApp();
+                }
+            }
+        }, false);
+
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal && modal.id !== 'confirmModal' && modal.id !== 'alarmPopupModal') {
+                    closeModals();
+                }
+            });
+        });
+
+        /* ==========================================
+           4. HYBRID STORAGE ENGINE (NATIVE + IDB + LOCALSTORAGE)
+        ========================================== */
+        const DB_NAME = 'FamilyMedProDB';
+        const DB_VERSION = 1;
+        let idb = null;
+
+        function ensureArraysExist() {
+            if (!dbData || typeof dbData !== 'object') dbData = {};
+            if (!Array.isArray(dbData.members)) dbData.members = [];
+            if (!Array.isArray(dbData.visits)) dbData.visits = [];
+            if (!Array.isArray(dbData.medications)) dbData.medications = [];
+            if (!Array.isArray(dbData.cabinet)) dbData.cabinet = [];
+            if (!Array.isArray(dbData.doctors)) dbData.doctors = [];
+            if (!Array.isArray(dbData.reminders)) dbData.reminders = [];
+        }
+
+        function loadFromLocalStorageFallback() {
+            try {
+                let fullRaw = localStorage.getItem('family_med_db');
+                if (fullRaw) {
+                    let parsed = JSON.parse(fullRaw);
+                    dbData = Object.assign(dbData, parsed);
+                } else {
+                    let m = localStorage.getItem('med_members'); if (m) dbData.members = JSON.parse(m);
+                    let v = localStorage.getItem('med_visits'); if (v) dbData.visits = JSON.parse(v);
+                    let meds = localStorage.getItem('med_medications'); if (meds) dbData.medications = JSON.parse(meds);
+                    let cab = localStorage.getItem('med_cabinet'); if (cab) dbData.cabinet = JSON.parse(cab);
+                    let docs = localStorage.getItem('med_doctors'); if (docs) dbData.doctors = JSON.parse(docs);
+                    let rem = localStorage.getItem('med_reminders'); if (rem) dbData.reminders = JSON.parse(rem);
+                }
+            } catch (e) { console.error('Fallback error:', e); }
+            ensureArraysExist();
+        }
+
+        function initDB() {
+            return new Promise((resolve) => {
+                ensureArraysExist();
+
+                // 1. Спроба завантажити з нативної пам'яті Android (найбільш надійно на смартфонах)
+                if (window.AndroidNative && typeof window.AndroidNative.loadAppData === 'function') {
+                    try {
+                        let nativeRaw = window.AndroidNative.loadAppData();
+                        if (nativeRaw && nativeRaw.length > 2) {
+                            let parsed = JSON.parse(nativeRaw);
+                            dbData = Object.assign(dbData, parsed);
+                            ensureArraysExist();
+                            resolve();
+                            return;
+                        }
+                    } catch (e) {
+                        console.error('Native load error:', e);
+                    }
+                }
+
+                // 2. Спроба завантажити з IndexedDB або LocalStorage
+                try {
+                    let request = indexedDB.open(DB_NAME, DB_VERSION);
+                    request.onupgradeneeded = function(e) {
+                        let db = e.target.result;
+                        if (!db.objectStoreNames.contains('app_store')) {
+                            db.createObjectStore('app_store');
+                        }
+                    };
+                    request.onsuccess = function(e) {
+                        idb = e.target.result;
+                        try {
+                            let tx = idb.transaction(['app_store'], 'readonly');
+                            let store = tx.objectStore('app_store');
+                            let req = store.get('main_data');
+                            req.onsuccess = function() {
+                                if (req.result && typeof req.result === 'object') {
+                                    dbData = Object.assign(dbData, req.result);
+                                } else {
+                                    loadFromLocalStorageFallback();
+                                }
+                                ensureArraysExist();
+                                resolve();
+                            };
+                            req.onerror = function() {
+                                loadFromLocalStorageFallback();
+                                resolve();
+                            };
+                        } catch (txErr) {
+                            loadFromLocalStorageFallback();
+                            resolve();
+                        }
+                    };
+                    request.onerror = function() {
+                        loadFromLocalStorageFallback();
+                        resolve();
+                    };
+                } catch (err) {
+                    loadFromLocalStorageFallback();
+                    resolve();
+                }
+            });
+        }
+
+        function saveToIDB() {
+            return new Promise((resolve) => {
+                ensureArraysExist();
+
+                // 1. МИТТЄВО оновлюємо весь інтерфейс на екрані
+                try { renderAll(); } catch (e) { console.error('Render error:', e); }
+
+                let jsonStr = '';
+                try { jsonStr = JSON.stringify(dbData); } catch (e) {}
+
+                // 2. Зберігаємо у нативну внутрішню пам'ять смартфона Android (чанками для великих баз)
+                if (window.AndroidNative && jsonStr) {
+                    try {
+                        if (typeof window.AndroidNative.startAppDataSave === 'function') {
+                            window.AndroidNative.startAppDataSave();
+                            const CHUNK = 250000;
+                            for (let i = 0; i < jsonStr.length; i += CHUNK) {
+                                window.AndroidNative.appendAppDataChunk(jsonStr.substring(i, i + CHUNK));
+                            }
+                            window.AndroidNative.finishAppDataSave();
+                        } else if (typeof window.AndroidNative.saveAppData === 'function') {
+                            window.AndroidNative.saveAppData(jsonStr);
+                        }
+                    } catch (e) { console.error('Native save error:', e); }
+                }
+
+                // 3. Зберігаємо у LocalStorage
+                try {
+                    localStorage.setItem('med_members', JSON.stringify(dbData.members));
+                    localStorage.setItem('med_cabinet', JSON.stringify(dbData.cabinet));
+                    localStorage.setItem('med_doctors', JSON.stringify(dbData.doctors));
+                    localStorage.setItem('med_medications', JSON.stringify(dbData.medications));
+                    if (jsonStr.length < 4500000) {
+                        localStorage.setItem('family_med_db', jsonStr);
+                    }
+                } catch (e) {}
+
+                // 4. Зберігаємо в IndexedDB
+                if (!idb) { resolve(); return; }
+                try {
+                    let tx = idb.transaction(['app_store'], 'readwrite');
+                    let store = tx.objectStore('app_store');
+                    store.put(dbData, 'main_data');
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => resolve();
+                } catch (e) {
+                    resolve();
+                }
+            });
+        }
+
+        function saveSettings() {
+            localStorage.setItem('med_pro_settings', JSON.stringify(appSettings));
+            checkBackupSchedule();
+        }
+
+        /* ==========================================
+           5. UI HELPERS & HIGH-RES IMAGE COMPRESSION
+        ========================================== */
+        function showToast(message, type = 'success') {
+            let container = document.getElementById('toast-container');
+            if (!container) return;
+            let toast = document.createElement('div');
+            toast.className = `toast ${type === 'warning' ? 'toast-warning' : ''} ${type === 'danger' ? 'toast-danger' : ''}`;
+            let icon = type === 'success' ? '✅' : (type === 'warning' ? '✏️' : '🗑️');
+            toast.innerHTML = `<span>${icon}</span><span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(-20px)';
+                toast.style.transition = '0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, 2800);
+        }
+
+        let confirmCallback = null;
+        function askConfirm(title, message, onYes) {
+            pushModalState();
+            document.getElementById('confirmTitle').innerText = title;
+            document.getElementById('confirmMessage').innerText = message;
+            confirmCallback = onYes;
+            document.getElementById('confirmModal').style.display = 'flex';
+        }
+
+        document.getElementById('confirmYesBtn').onclick = function() {
+            if (confirmCallback) confirmCallback();
+            closeConfirmModal();
+        };
+
+        function closeConfirmModal() {
+            document.getElementById('confirmModal').style.display = 'none';
+            confirmCallback = null;
+        }
+
+        function applyTheme() {
+            if (appSettings.theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.getElementById('themeBtn').innerText = '☀️';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                document.getElementById('themeBtn').innerText = '🌙';
+            }
+        }
+
+        function toggleTheme() {
+            appSettings.theme = appSettings.theme === 'dark' ? 'light' : 'dark';
+            saveSettings();
+            applyTheme();
+            showToast(appSettings.theme === 'dark' ? 'Увімкнено темну тему 🌙' : 'Увімкнено світлу тему ☀️');
+        }
+
+        function calculateAge(birthDateStr) {
+            if (!birthDateStr) return '';
+            let birth = new Date(birthDateStr);
+            if (isNaN(birth.getTime())) return '';
+            let now = new Date();
+            let years = now.getFullYear() - birth.getFullYear();
+            let months = now.getMonth() - birth.getMonth();
+            if (months < 0 || (months === 0 && now.getDate() < birth.getDate())) {
+                years--;
+                months += 12;
+            }
+            if (years < 0) return '';
+            if (years === 0) return `${months} міс.`;
+            if (years < 7 && months > 0) return `${years} р. ${months} міс.`;
+            return `${years} р.`;
+        }
+
+        function compressImage(file, maxWidth = 2200, quality = 0.88) {
+            return new Promise((resolve) => {
+                let reader = new FileReader();
+                reader.onload = function(event) {
+                    let img = new Image();
+                    img.onload = function() {
+                        let canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+                        if (width > maxWidth) {
+                            height = Math.round((height * maxWidth) / width);
+                            width = maxWidth;
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        let ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        resolve(canvas.toDataURL('image/jpeg', quality));
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        /* ==========================================
+           6. NAVIGATION & SEARCH
+        ========================================== */
+        function switchTab(tabName, fromBackGesture = false) {
+            let previousTab = currentActiveTab;
+            currentActiveTab = tabName;
+            if (!fromBackGesture && window.history && window.history.pushState) {
+                window.history.pushState({ tab: tabName }, '');
+            }
+
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+            
+            const tabMap = { 'members': 0, 'visits': 1, 'meds': 2, 'doctors': 3, 'docs': 4, 'timeline': 5, 'analytics': 6, 'settings': 7 };
+            if (tabMap[tabName] !== undefined) {
+                document.querySelectorAll('.tab')[tabMap[tabName]].classList.add('active');
+            }
+            document.getElementById('tab-' + tabName).style.display = 'block';
+
+            if (tabName === 'visits') {
+                if (previousTab !== 'visits') {
+                    document.getElementById('searchQuery').value = '';
+                    document.getElementById('clearSearchBtn').style.display = 'none';
+                    document.getElementById('filterMember').value = '';
+                    document.getElementById('filterYear').value = '';
+                    document.getElementById('filterType').value = '';
+                }
+                updateDropdowns();
+                renderQuickFilterTags();
+                renderVisits();
+            }
+            if (tabName === 'meds') { updateDropdowns(); renderMeds(); renderCabinet(); }
+            if (tabName === 'doctors') { renderDoctorsDirectory(); }
+            if (tabName === 'docs') {
+                if (previousTab !== 'docs') {
+                    document.getElementById('docSearchQuery').value = '';
+                }
+                updateDropdowns();
+                renderDocQuickTags();
+                renderDocumentsArchive();
+            }
+            if (tabName === 'timeline') { updateDropdowns(); renderTimeline(); }
+            if (tabName === 'analytics') { updateDropdowns(); renderAnalytics(); }
+            if (tabName === 'settings') { renderCustomTagsManage(); updateBackupSettingsUI(); updatePinSettingsUI(); }
+        }
+
+        function switchMedSubTab(sub) {
+            currentMedSubTab = sub;
+            document.getElementById('subTabBtnTracker').classList.toggle('active', sub === 'tracker');
+            document.getElementById('subTabBtnCabinet').classList.toggle('active', sub === 'cabinet');
+            document.getElementById('med-sub-tracker').style.display = sub === 'tracker' ? 'block' : 'none';
+            document.getElementById('med-sub-cabinet').style.display = sub === 'cabinet' ? 'block' : 'none';
+            if (sub === 'tracker') renderMeds();
+            else renderCabinet();
+        }
+
+        function onSearchInput() {
+            let val = document.getElementById('searchQuery').value;
+            document.getElementById('clearSearchBtn').style.display = val.length > 0 ? 'flex' : 'none';
+            renderVisits();
+        }
+
+        function clearSearchInput() {
+            document.getElementById('searchQuery').value = '';
+            document.getElementById('clearSearchBtn').style.display = 'none';
+            renderVisits();
+        }
+
+        function setSearchQuery(q) {
+            document.getElementById('searchQuery').value = q;
+            document.getElementById('clearSearchBtn').style.display = q ? 'flex' : 'none';
+            saveSearchQuery(q);
+            renderVisits();
+        }
+
+        function getAllTags() {
+            return {
+                serious: [...DEFAULT_SERIOUS_TAGS, ...(appSettings.customTags || [])],
+                funny: DEFAULT_FUNNY_TAGS
+            };
+        }
+
+        function renderTagChipsForInput(containerId, inputId) {
+            let tags = getAllTags();
+            let container = document.getElementById(containerId);
+            let html = tags.serious.map(t => `<span class="chip" onclick="appendTagToInput('${inputId}', '${t}')">${t}</span>`).join('');
+            html += tags.funny.map(t => `<span class="chip chip-funny" onclick="appendTagToInput('${inputId}', '${t}')">😄 ${t}</span>`).join('');
+            container.innerHTML = html;
+        }
+
+        function appendTagToInput(inputId, tag) {
+            let inp = document.getElementById(inputId);
+            let val = inp.value.trim();
+            if (!val.includes(tag)) {
+                inp.value = val ? (val + ' ' + tag) : tag;
+            }
+        }
+
+        function renderQuickFilterTags() {
+            let tags = getAllTags();
+            let all = [...tags.serious.slice(0, 6), ...tags.funny.slice(0, 4)];
+            document.getElementById('quickFilterTags').innerHTML = all.map(t => 
+                `<span class="chip" onclick="setSearchQuery('${t}')">${t}</span>`
+            ).join('');
+        }
+
+        function renderDocQuickTags() {
+            let tags = ['#аналізи', '#кров', '#рентген', '#УЗД', '#рецепт', '#виписка', ...(appSettings.customTags || [])];
+            document.getElementById('docQuickTags').innerHTML = tags.map(t => 
+                `<span class="chip" onclick="document.getElementById('docSearchQuery').value='${t}'; renderDocumentsArchive();">${t}</span>`
+            ).join('');
+        }
+
+        function saveSearchQuery(q) {
+            q = q.trim();
+            if (!q || q.length < 2) return;
+            appSettings.searchHistory = [q, ...(appSettings.searchHistory || []).filter(x => x !== q)].slice(0, 8);
+            saveSettings();
+        }
+
+        function showSearchHistory() {
+            let box = document.getElementById('searchHistoryBox');
+            let hist = appSettings.searchHistory || [];
+            if (hist.length === 0) { box.style.display = 'none'; return; }
+            box.innerHTML = `<div style="font-size:0.72rem; color:var(--text-light); margin-bottom:4px;">Останні пошукові запити:</div>` +
+                hist.map(h => `<span class="history-tag" onclick="setSearchQuery('${h}'); document.getElementById('searchHistoryBox').style.display='none';">🕒 ${h}</span>`).join('');
+            box.style.display = 'block';
+            setTimeout(() => {
+                document.addEventListener('click', function hideBox(e) {
+                    if (!e.target.closest('.search-wrapper')) {
+                        box.style.display = 'none';
+                        document.removeEventListener('click', hideBox);
+                    }
+                });
+            }, 100);
+        }
+
+        function clearSearchHistory() {
+            appSettings.searchHistory = [];
+            saveSettings();
+            showToast('Історію пошуку очищено', 'danger');
+        }
+
+        function addCustomTag() {
+            let inp = document.getElementById('newCustomTagInput');
+            let val = inp.value.trim();
+            if (!val) return;
+            if (!val.startsWith('#')) val = '#' + val;
+            if (!appSettings.customTags) appSettings.customTags = [];
+            if (!appSettings.customTags.includes(val)) {
+                appSettings.customTags.push(val);
+                saveSettings();
+                inp.value = '';
+                renderCustomTagsManage();
+                showToast(`Додано хештег ${val}`);
+            }
+        }
+
+        function removeCustomTag(tag) {
+            appSettings.customTags = (appSettings.customTags || []).filter(t => t !== tag);
+            saveSettings();
+            renderCustomTagsManage();
+            showToast(`Хештег ${tag} видалено`, 'danger');
+        }
+
+        function renderCustomTagsManage() {
+            let list = appSettings.customTags || [];
+            let container = document.getElementById('customTagsManageList');
+            if (list.length === 0) {
+                container.innerHTML = '<span style="font-size:0.8rem; color:var(--text-light);">Власних хештегів поки немає</span>';
+            } else {
+                container.innerHTML = list.map(t => `<span class="chip">${t} <b onclick="removeCustomTag('${t}')" style="color:var(--danger); margin-left:4px;">×</b></span>`).join('');
+            }
+        }
+
+        /* ==========================================
+           7. MEMBERS MANAGEMENT
+        ========================================== */
+        function renderEmojiPicker() {
+            let container = document.getElementById('emojiPicker');
+            container.innerHTML = EMOJI_AVATARS.map(em => `
+                <div class="emoji-option ${selectedMemberAvatar === em ? 'selected' : ''}" onclick="selectEmojiAvatar('${em}')">${em}</div>
+            `).join('');
+        }
+
+        function selectEmojiAvatar(em) {
+            selectedMemberAvatar = em;
+            document.getElementById('mAvatarPreview').innerHTML = em;
+            renderEmojiPicker();
+        }
+
+        async function handleMemberPhoto(input) {
+            if (input.files && input.files[0]) {
+                let compressed = await compressImage(input.files[0], 300, 0.8);
+                selectedMemberAvatar = compressed;
+                document.getElementById('mAvatarPreview').innerHTML = `<img src="${compressed}">`;
+                renderEmojiPicker();
+            }
+        }
+
+        function openMemberModal(id = null) {
+            pushModalState();
+            ensureArraysExist();
+            document.getElementById('mEditId').value = id || '';
+            document.getElementById('mPhotoInput').value = '';
+            if (id) {
+                let m = dbData.members.find(x => x.id === id);
+                document.getElementById('memberModalTitle').innerText = '✏️ Редагувати профіль';
+                document.getElementById('mName').value = m.name;
+                if (m.birthDate && m.birthDate.includes('-')) {
+                    let parts = m.birthDate.split('-');
+                    document.getElementById('mBirthYear').value = parts[0] || '';
+                    document.getElementById('mBirthMonth').value = parts[1] || '';
+                    document.getElementById('mBirthDay').value = parts[2] || '';
+                } else {
+                    document.getElementById('mBirthYear').value = '';
+                    document.getElementById('mBirthMonth').value = '';
+                    document.getElementById('mBirthDay').value = '';
+                }
+                document.getElementById('mBlood').value = m.bloodGroup || '';
+                document.getElementById('mAllergies').value = m.allergies || '';
+                document.getElementById('mChronic').value = m.chronic || '';
+                selectedMemberAvatar = m.avatar || '👨';
+            } else {
+                document.getElementById('memberModalTitle').innerText = '👤 Новий член родини';
+                document.getElementById('mName').value = '';
+                document.getElementById('mBirthYear').value = '';
+                document.getElementById('mBirthMonth').value = '';
+                document.getElementById('mBirthDay').value = '';
+                document.getElementById('mBlood').value = '';
+                document.getElementById('mAllergies').value = '';
+                document.getElementById('mChronic').value = '';
+                selectedMemberAvatar = '👨';
+            }
+            document.getElementById('mAvatarPreview').innerHTML = selectedMemberAvatar.startsWith('data:image') ? `<img src="${selectedMemberAvatar}">` : selectedMemberAvatar;
+            renderEmojiPicker();
+            document.getElementById('memberModal').style.display = 'flex';
+        }
+
+        function saveMember() {
+            ensureArraysExist();
+            let editId = document.getElementById('mEditId').value;
+            let name = document.getElementById('mName').value.trim();
+            if (!name) { showToast('Будь ласка, введіть ім\'я!', 'warning'); return; }
+            
+            let y = document.getElementById('mBirthYear').value;
+            let m = document.getElementById('mBirthMonth').value;
+            let d = document.getElementById('mBirthDay').value;
+            let birthDateStr = (y && m && d) ? `${y}-${m}-${d}` : (y ? `${y}-01-01` : '');
+
+            let memberObj = {
+                id: editId || Date.now().toString(),
+                name: name,
+                birthDate: birthDateStr,
+                bloodGroup: document.getElementById('mBlood').value,
+                allergies: document.getElementById('mAllergies').value,
+                chronic: document.getElementById('mChronic').value,
+                avatar: selectedMemberAvatar
+            };
+
+            if (editId) {
+                let idx = dbData.members.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.members[idx] = memberObj;
+                showToast(`Профіль «${name}» оновлено!`, 'warning');
+            } else {
+                dbData.members.push(memberObj);
+                showToast(`Додано члена родини: «${name}»!`);
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function deleteMember(id) {
+            let m = dbData.members.find(x => x.id === id);
+            askConfirm('Видалити профіль?', `Ви впевнені, що хочете видалити профіль «${m ? m.name : ''}» та всі пов'язані медичні записи?`, () => {
+                dbData.members = dbData.members.filter(x => x.id !== id);
+                dbData.visits = dbData.visits.filter(v => v.memberId !== id);
+                dbData.medications = (dbData.medications || []).filter(med => med.memberId !== id);
+                saveToIDB();
+                showToast('Профіль та записи видалено', 'danger');
+            });
+        }
+
+        function openEmergencyCard(memberId) {
+            pushModalState();
+            let m = dbData.members.find(x => x.id === memberId);
+            if (!m) return;
+            let memberVisits = dbData.visits.filter(v => v.memberId === memberId).sort((a,b) => new Date(b.date) - new Date(a.date));
+            let recentDiagnoses = memberVisits.slice(0, 4).map(v => `<li><b>${v.date}:</b> ${v.diagnosis || v.doctor} ${v.treatment ? `<i>(${v.treatment})</i>` : ''}</li>`).join('');
+
+            let avatarHtml = (m.avatar && m.avatar.startsWith('data:image')) ? `<img src="${m.avatar}">` : (m.avatar || '👤');
+            let ageStr = calculateAge(m.birthDate);
+
+            document.getElementById('emergencyModalContent').innerHTML = `
+                <div style="text-align:center; margin-bottom:12px;">
+                    <div class="avatar-circle" style="margin:0 auto 8px auto; width:76px; height:76px; font-size:2.5rem;">${avatarHtml}</div>
+                    <h2 style="font-size:1.35rem; color:var(--primary);">${m.name}</h2>
+                    <p style="font-size:1rem; font-weight:bold;">${m.birthDate ? `Дата нар.: ${m.birthDate} (${ageStr})` : 'Вік не вказано'}</p>
+                </div>
+                <div class="card" style="background:var(--danger-light); border-color:var(--danger); margin-bottom:10px;">
+                    <p style="font-size:1rem; color:var(--danger);"><b>🩸 Група крові:</b> ${m.bloodGroup || 'Не вказано'}</p>
+                    <p style="font-size:1rem; color:var(--danger);"><b>⚠️ Алергії на ліки/продукти:</b> ${m.allergies || 'Немає даних'}</p>
+                </div>
+                <div class="card" style="background:var(--bg); margin-bottom:10px;">
+                    <p style="font-size:0.95rem;"><b>📌 Хронічні стани / Особливості:</b><br>${m.chronic || 'Немає записів'}</p>
+                </div>
+                <div class="card" style="background:var(--bg); margin-bottom:14px;">
+                    <p style="font-size:0.95rem;"><b>🕒 Останні звернення та призначення:</b></p>
+                    <ul style="padding-left:18px; font-size:0.88rem; margin-top:6px; line-height:1.5;">
+                        ${recentDiagnoses || '<li>Записів поки немає</li>'}
+                    </ul>
+                </div>
+                <button class="btn btn-teal" onclick="closeModals(); openPrintableReportModal('${m.id}');">🖨️ Повна виписка для лікаря (PDF / Друк)</button>
+                <button class="btn btn-secondary" onclick="closeModals()">Закрити картку (Назад)</button>
+            `;
+            document.getElementById('emergencyModal').style.display = 'flex';
+        }
+
+        function renderMembers() {
+            ensureArraysExist();
+            let mDiv = document.getElementById('members-list');
+            if (dbData.members.length === 0) {
+                mDiv.innerHTML = '<div class="empty-state">👨‍👩‍👧‍👦 Додайте першого члена родини, щоб почати вести медичну історію</div>';
+                return;
+            }
+            mDiv.innerHTML = dbData.members.map(m => {
+                let avatarHtml = (m.avatar && m.avatar.startsWith('data:image')) ? `<img src="${m.avatar}">` : (m.avatar || '👤');
+                let ageStr = calculateAge(m.birthDate);
+                let visitsCount = dbData.visits.filter(v => v.memberId === m.id).length;
+                let activeMedsCount = (dbData.medications || []).filter(med => med.memberId === m.id && (med.status || 'active') === 'active').length;
+                let totalSpent = dbData.visits.filter(v => v.memberId === m.id).reduce((sum, v) => sum + (Number(v.costDoctor)||0) + (Number(v.costMeds)||0), 0);
+
+                return `
+                    <div class="card">
+                        <div class="member-header">
+                            <div class="avatar-circle">${avatarHtml}</div>
+                            <div style="flex:1;">
+                                <h3>${m.name} ${ageStr ? `<span class="badge">${ageStr}</span>` : ''}</h3>
+                                <p><b>Дата народження:</b> ${m.birthDate || 'не вказано'} | <b>Група крові:</b> <span style="color:var(--primary); font-weight:bold;">${m.bloodGroup || '—'}</span></p>
+                                <span class="badge badge-purple">Записів: ${visitsCount}</span>
+                                ${activeMedsCount > 0 ? `<span class="badge badge-success" onclick="switchTab('meds')" style="cursor:pointer;">💊 П'є ліків: ${activeMedsCount}</span>` : ''}
+                                ${totalSpent > 0 ? `<span class="badge badge-money">Витрачено: ${totalSpent.toLocaleString()} ₴</span>` : ''}
+                            </div>
+                        </div>
+                        <p><b>⚠️ Алергії:</b> <span style="color:var(--danger); font-weight:600;">${m.allergies || 'немає'}</span></p>
+                        ${m.chronic ? `<p><b>📌 Хронічні / Примітки:</b> ${m.chronic}</p>` : ''}
+                        <div style="margin-top: 12px; display:flex; gap:6px; flex-wrap:wrap; border-top:1px solid var(--border); padding-top:10px;">
+                            <button class="btn btn-sm" style="background:var(--primary);" onclick="openEmergencyCard('${m.id}')">🆘 Картка для лікаря</button>
+                            <button class="btn btn-teal btn-sm" onclick="openPrintableReportModal('${m.id}')">🖨️ Виписка PDF</button>
+                            <button class="btn btn-warning btn-sm" onclick="openMemberModal('${m.id}')">✏️ Редагувати</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteMember('${m.id}')">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        /* ==========================================
+           8. DOCTORS & CLINICS DIRECTORY
+        ========================================== */
+        function openDoctorModal(id = null) {
+            pushModalState();
+            ensureArraysExist();
+            document.getElementById('docEditId').value = id || '';
+            if (id) {
+                let d = (dbData.doctors || []).find(x => x.id === id);
+                document.getElementById('docModalTitle').innerText = '✏️ Редагувати контакт лікаря';
+                document.getElementById('docName').value = d.name || '';
+                document.getElementById('docSpec').value = d.spec || '';
+                document.getElementById('docClinic').value = d.clinic || '';
+                document.getElementById('docPhone').value = d.phone || '';
+                document.getElementById('docSchedule').value = d.schedule || '';
+                document.getElementById('docNotes').value = d.notes || '';
+            } else {
+                document.getElementById('docModalTitle').innerText = '📇 Додати лікаря в довідник';
+                document.getElementById('docName').value = '';
+                document.getElementById('docSpec').value = '';
+                document.getElementById('docClinic').value = '';
+                document.getElementById('docPhone').value = '';
+                document.getElementById('docSchedule').value = '';
+                document.getElementById('docNotes').value = '';
+            }
+            document.getElementById('doctorModal').style.display = 'flex';
+        }
+
+        function saveDoctorToDirectory() {
+            ensureArraysExist();
+            let name = document.getElementById('docName').value.trim();
+            let spec = document.getElementById('docSpec').value.trim();
+            if (!name && !spec) { showToast('Вкажіть ПІБ або спеціалізацію лікаря!', 'warning'); return; }
+
+            let editId = document.getElementById('docEditId').value;
+
+            let docObj = {
+                id: editId || Date.now().toString(),
+                name: name || 'Лікар',
+                spec: spec || 'Спеціаліст',
+                clinic: document.getElementById('docClinic').value.trim(),
+                phone: document.getElementById('docPhone').value.trim(),
+                schedule: document.getElementById('docSchedule').value.trim(),
+                notes: document.getElementById('docNotes').value.trim()
+            };
+
+            if (editId) {
+                let idx = dbData.doctors.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.doctors[idx] = docObj;
+                showToast('Контакт лікаря оновлено! ✏️', 'warning');
+            } else {
+                dbData.doctors.push(docObj);
+                showToast('Лікаря додано в довідник! 📇');
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function deleteDoctorFromDirectory(id) {
+            askConfirm('Видалити контакт лікаря?', 'Видалити цього спеціаліста з довідника? (Історія візитів у журналі залишиться)', () => {
+                dbData.doctors = (dbData.doctors || []).filter(x => x.id !== id);
+                saveToIDB();
+                showToast('Контакт лікаря видалено', 'danger');
+            });
+        }
+
+        function createVisitWithDoctor(docId) {
+            let d = (dbData.doctors || []).find(x => x.id === docId);
+            if (!d) return;
+            openVisitModal();
+            setTimeout(() => {
+                document.getElementById('vDoctor').value = `${d.spec ? d.spec + ' ' : ''}${d.name}`.trim();
+                document.getElementById('vClinic').value = d.clinic || '';
+            }, 60);
+        }
+
+        function renderDoctorsDirectory() {
+            ensureArraysExist();
+            let list = dbData.doctors || [];
+            let query = (document.getElementById('docDirSearchQuery').value || '').toLowerCase().trim();
+
+            let filtered = list.filter(d => {
+                let txt = `${d.name} ${d.spec} ${d.clinic} ${d.phone} ${d.schedule} ${d.notes}`.toLowerCase();
+                return !query || txt.includes(query);
+            });
+
+            let container = document.getElementById('doctors-directory-list');
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="empty-state">📇 Довідник лікарів порожній або нічого не знайдено. Зберігайте тут контакти перевірених спеціалістів!</div>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(d => {
+                let cleanPhone = (d.phone || '').replace(/[^0-9+]/g, '');
+                let cleanDigits = cleanPhone.replace(/\+/g, '');
+                return `
+                    <div class="card" style="border-left: 5px solid var(--primary);">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; margin-bottom:6px;">
+                            <span class="badge">${d.spec || 'Лікар'}</span>
+                            ${d.clinic ? `<span class="badge badge-purple">🏥 ${d.clinic}</span>` : ''}
+                        </div>
+                        <h3>👨‍⚕️ ${d.name}</h3>
+                        ${d.phone ? `<p><b>📞 Телефон:</b> <a href="tel:${cleanPhone}" style="color:var(--primary); font-weight:bold; text-decoration:none;">${d.phone}</a></p>` : ''}
+                        ${d.schedule ? `<p><b>📍 Кабінет / Графік:</b> ${d.schedule}</p>` : ''}
+                        ${d.notes ? `<p><b>📝 Примітки:</b> ${d.notes}</p>` : ''}
+
+                        <div class="attachment-actions" style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">
+                            ${cleanPhone ? `<a href="tel:${cleanPhone}" class="btn-xs" style="background:var(--success-light); color:var(--success); border-color:var(--success);">📞 Подзвонити</a>` : ''}
+                            ${cleanDigits ? `<a href="viber://chat?number=%2B${cleanDigits}" class="btn-xs" style="color:var(--purple);">💬 Viber</a>` : ''}
+                            ${cleanPhone ? `<a href="https://t.me/${cleanPhone.startsWith('+') ? cleanPhone : '+' + cleanPhone}" target="_blank" class="btn-xs" style="color:var(--primary);">✈️ Telegram</a>` : ''}
+                            <button class="btn-xs" onclick="createVisitWithDoctor('${d.id}')">🩺 Створити візит</button>
+                            <button class="btn-xs" onclick="openDoctorModal('${d.id}')">✏️</button>
+                            <button class="btn-xs" style="color:var(--danger);" onclick="deleteDoctorFromDirectory('${d.id}')">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function fillVisitFromDirectory(docId) {
+            if (!docId) return;
+            let d = (dbData.doctors || []).find(x => x.id === docId);
+            if (!d) return;
+            document.getElementById('vDoctor').value = `${d.spec ? d.spec + ' ' : ''}${d.name}`.trim();
+            document.getElementById('vClinic').value = d.clinic || '';
+            showToast(`Підставлено: ${d.name}`);
+        }
+
+        /* ==========================================
+           9. MEDICATION TRACKER, CABINET & ALARMS
+        ========================================== */
+        function playAlarmSound() {
+            try {
+                let ctx = new (window.AudioContext || window.webkitAudioContext)();
+                let osc = ctx.createOscillator();
+                let gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.4);
+            } catch (e) {}
+        }
+
+        function requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+        }
+
+        function setMedReminderHours(medId, hours) {
+            requestNotificationPermission();
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            let member = dbData.members.find(m => m.id === med.memberId);
+            let memberName = member ? member.name : '';
+
+            let targetTime = Date.now() + (hours * 3600 * 1000);
+            let targetDate = new Date(targetTime);
+            let timeStr = targetDate.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+
+            ensureArraysExist();
+            dbData.reminders = dbData.reminders.filter(r => r.medId !== medId);
+            dbData.reminders.push({
+                id: Date.now().toString(),
+                medId: medId,
+                medName: `${med.name} (${med.dose})`,
+                memberName: memberName,
+                targetTime: targetTime,
+                timeStr: timeStr
+            });
+            saveToIDB();
+            showToast(`⏰ Таймер встановлено на ${timeStr} (через ${hours} год)`);
+        }
+
+        function setMedReminderExactTime(medId, timeVal) {
+            if (!timeVal) return;
+            requestNotificationPermission();
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            let member = dbData.members.find(m => m.id === med.memberId);
+            let memberName = member ? member.name : '';
+
+            let [hh, mm] = timeVal.split(':').map(Number);
+            let now = new Date();
+            let target = new Date();
+            target.setHours(hh, mm, 0, 0);
+            if (target.getTime() <= now.getTime()) {
+                target.setDate(target.getDate() + 1);
+            }
+
+            ensureArraysExist();
+            dbData.reminders = dbData.reminders.filter(r => r.medId !== medId);
+            dbData.reminders.push({
+                id: Date.now().toString(),
+                medId: medId,
+                medName: `${med.name} (${med.dose})`,
+                memberName: memberName,
+                targetTime: target.getTime(),
+                timeStr: timeVal
+            });
+            saveToIDB();
+            showToast(`⏰ Таймер встановлено на ${timeVal}!`);
+        }
+
+        function setNativeAndroidAlarmForMed(medId) {
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            let member = dbData.members.find(m => m.id === med.memberId);
+            let rem = (dbData.reminders || []).find(r => r.medId === medId);
+            let target = rem ? new Date(rem.targetTime) : new Date(Date.now() + 4 * 3600 * 1000);
+            let hh = target.getHours();
+            let mm = target.getMinutes();
+            let msg = `💊 ${med.name} (${med.dose}) - ${member ? member.name : ''}`;
+
+            if (window.AndroidNative && typeof window.AndroidNative.setSystemAlarm === 'function') {
+                let res = window.AndroidNative.setSystemAlarm(hh, mm, msg);
+                if (res === 'OK') {
+                    showToast(`⏰ Системний будильник Android відкрито на ${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}!`);
+                    return;
+                }
+            }
+            openSystemReminder(medId);
+        }
+
+        function cancelMedReminder(medId) {
+            dbData.reminders = (dbData.reminders || []).filter(r => r.medId !== medId);
+            saveToIDB();
+            showToast('Таймер скасовано', 'warning');
+        }
+
+        function openSystemReminder(medId) {
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            let member = dbData.members.find(m => m.id === med.memberId);
+            let rem = (dbData.reminders || []).find(r => r.medId === medId);
+            let startTime = rem ? new Date(rem.targetTime) : new Date(Date.now() + 4 * 3600 * 1000);
+            let endTime = new Date(startTime.getTime() + 15 * 60 * 1000);
+
+            let fmt = d => d.toISOString().replace(/-|:|\.\d+/g, '');
+            let title = encodeURIComponent(`💊 Прийняти: ${med.name} (${med.dose}) - ${member ? member.name : ''}`);
+            let details = encodeURIComponent(`Правило: ${med.rule}. ${med.notes || ''}`);
+            let url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&details=${details}&dates=${fmt(startTime)}/${fmt(endTime)}`;
+            window.open(url, '_blank');
+        }
+
+        setInterval(() => {
+            if (!dbData.reminders || dbData.reminders.length === 0) return;
+            let now = Date.now();
+            let triggered = false;
+            dbData.reminders.forEach(r => {
+                if (!r.fired && now >= r.targetTime) {
+                    r.fired = true;
+                    triggered = true;
+                    triggerAlarmPopup(r);
+                }
+            });
+            if (triggered) {
+                dbData.reminders = dbData.reminders.filter(r => !r.fired);
+                saveToIDB();
+            }
+        }, 5000);
+
+        function triggerAlarmPopup(rem) {
+            pushModalState();
+            document.getElementById('alarmPopupText').innerText = `${rem.memberName ? rem.memberName + ': ' : ''}${rem.medName}`;
+            document.getElementById('alarmPopupModal').style.display = 'flex';
+            playAlarmSound();
+            if (navigator.vibrate) navigator.vibrate([500, 300, 500, 300, 500]);
+            if ('Notification' in window && Notification.permission === 'granted') {
+                try {
+                    new Notification('⏰ Час прийняти ліки!', {
+                        body: `${rem.memberName}: ${rem.medName}`
+                    });
+                } catch (e) {}
+            }
+            if (alarmAudioInterval) clearInterval(alarmAudioInterval);
+            alarmAudioInterval = setInterval(playAlarmSound, 2500);
+        }
+
+        function stopAlarmAndClose() {
+            if (alarmAudioInterval) {
+                clearInterval(alarmAudioInterval);
+                alarmAudioInterval = null;
+            }
+            closeModals();
+        }
+
+        function renderActiveRemindersBanner() {
+            let banner = document.getElementById('activeRemindersBanner');
+            let list = dbData.reminders || [];
+            if (list.length === 0) {
+                banner.style.display = 'none';
+                return;
+            }
+            banner.style.display = 'block';
+            banner.style.background = 'var(--purple-light)';
+            banner.style.borderColor = 'var(--purple)';
+            banner.innerHTML = `<div style="font-size:0.82rem; font-weight:700; color:var(--purple); margin-bottom:4px;">🔔 Активні таймери прийому ліків:</div>` +
+                list.map(r => `
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; padding:4px 0;">
+                        <span>⏰ <b>${r.timeStr}</b> — ${r.medName} (${r.memberName})</span>
+                        <button class="btn btn-danger btn-sm" style="padding:2px 8px; font-size:0.7rem;" onclick="cancelMedReminder('${r.medId}')">✖</button>
+                    </div>
+                `).join('');
+        }
+
+        function shiftMedDate(days) {
+            let el = document.getElementById('medTrackerDate');
+            let cur = el.value ? new Date(el.value) : new Date();
+            cur.setDate(cur.getDate() + days);
+            el.value = cur.toISOString().split('T')[0];
+            renderMeds();
+        }
+
+        function openMedModal(id = null, prefillObj = null) {
+            ensureArraysExist();
+            if (dbData.members.length === 0) { showToast('Спочатку додайте члена родини!', 'warning'); return; }
+            pushModalState();
+            let select = document.getElementById('medMemberId');
+            select.innerHTML = dbData.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+
+            let cabSel = document.getElementById('medFromCabinetSelect');
+            cabSel.innerHTML = '<option value="">— Ввести вручну або обрати з аптечки —</option>' +
+                (dbData.cabinet || []).map(c => `<option value="${c.id}">🧰 ${c.name} (${c.qty || 'в аптечці'})</option>`).join('');
+            
+            document.getElementById('medEditId').value = id || '';
+            let checkboxes = document.querySelectorAll('.med-slot-cb');
+
+            if (id) {
+                let med = (dbData.medications || []).find(x => x.id === id);
+                document.getElementById('medModalTitle').innerText = '✏️ Редагувати курс ліків';
+                select.value = med.memberId;
+                document.getElementById('medName').value = med.name;
+                document.getElementById('medDose').value = med.dose || '';
+                document.getElementById('medRule').value = med.rule || 'Після їжі';
+                document.getElementById('medStartDate').value = med.startDate;
+                document.getElementById('medDays').value = med.days || 7;
+                document.getElementById('medNotes').value = med.notes || '';
+                checkboxes.forEach(cb => { cb.checked = (med.slots || []).includes(cb.value); });
+            } else {
+                document.getElementById('medModalTitle').innerText = '💊 Призначити курс ліків';
+                if (prefillObj) {
+                    if (prefillObj.memberId) select.value = prefillObj.memberId;
+                    document.getElementById('medName').value = prefillObj.name || '';
+                    document.getElementById('medDose').value = prefillObj.dose || '1 таб.';
+                    document.getElementById('medNotes').value = prefillObj.notes || '';
+                } else {
+                    document.getElementById('medName').value = '';
+                    document.getElementById('medDose').value = '1 таб.';
+                    document.getElementById('medNotes').value = '';
+                }
+                document.getElementById('medRule').value = 'Після їжі';
+                document.getElementById('medStartDate').value = new Date().toISOString().split('T')[0];
+                document.getElementById('medDays').value = 7;
+                checkboxes.forEach(cb => { cb.checked = (cb.value === '🌅 Ранок' || cb.value === '🌆 Вечір'); });
+            }
+            document.getElementById('medModal').style.display = 'flex';
+        }
+
+        function fillMedFromCabinet(cabId) {
+            if (!cabId) return;
+            let item = (dbData.cabinet || []).find(x => x.id === cabId);
+            if (!item) return;
+            document.getElementById('medName').value = item.name;
+            if (item.notes) document.getElementById('medNotes').value = item.notes;
+            showToast(`Підставлено з аптечки: ${item.name}`);
+        }
+
+        function sendVisitTreatmentToTracker(visitId) {
+            let v = dbData.visits.find(x => x.id === visitId);
+            if (!v) return;
+            let medTitle = (v.treatment || v.diagnosis || '').split('\n')[0].substring(0, 60);
+            openMedModal(null, {
+                memberId: v.memberId,
+                name: medTitle,
+                dose: 'За призначенням',
+                notes: `${v.diagnosis || v.doctor} (${v.date}): ${v.treatment || ''}`
+            });
+        }
+
+        function sendCabinetItemToTracker(cabId) {
+            let item = (dbData.cabinet || []).find(x => x.id === cabId);
+            if (!item) return;
+            openMedModal(null, {
+                name: item.name,
+                dose: '1 доза',
+                notes: item.notes || ''
+            });
+        }
+
+        function saveMedCourse() {
+            ensureArraysExist();
+            let name = document.getElementById('medName').value.trim();
+            if (!name) { showToast('Введіть назву препарату!', 'warning'); return; }
+
+            let slots = Array.from(document.querySelectorAll('.med-slot-cb')).filter(cb => cb.checked).map(cb => cb.value);
+            if (slots.length === 0) { showToast('Оберіть хоча б один час прийому!', 'warning'); return; }
+
+            let editId = document.getElementById('medEditId').value;
+
+            let existingLogs = {};
+            let existingStatus = 'active';
+            if (editId) {
+                let old = dbData.medications.find(x => x.id === editId);
+                if (old) { existingLogs = old.logs || {}; existingStatus = old.status || 'active'; }
+            }
+
+            let medObj = {
+                id: editId || Date.now().toString(),
+                memberId: document.getElementById('medMemberId').value,
+                name: name,
+                dose: document.getElementById('medDose').value.trim() || '1 доза',
+                rule: document.getElementById('medRule').value,
+                slots: slots,
+                startDate: document.getElementById('medStartDate').value,
+                days: parseInt(document.getElementById('medDays').value) || 7,
+                notes: document.getElementById('medNotes').value.trim(),
+                status: existingStatus,
+                logs: existingLogs
+            };
+
+            if (editId) {
+                let idx = dbData.medications.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.medications[idx] = medObj;
+                showToast(`Курс «${name}» оновлено! ✏️`, 'warning');
+            } else {
+                dbData.medications.push(medObj);
+                showToast(`Курс «${name}» додано в трекер! 💊`);
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function toggleMedDose(medId, dateStr, slotName) {
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            if (!med.logs) med.logs = {};
+            let key = `${dateStr}_${slotName}`;
+            if (med.logs[key]) {
+                delete med.logs[key];
+                showToast(`Відмітку знято (${slotName})`, 'warning');
+            } else {
+                med.logs[key] = true;
+                showToast(`Прийнято: ${med.name} (${slotName}) ✅`);
+            }
+            saveToIDB();
+        }
+
+        function toggleMedCourseStatus(medId) {
+            let med = (dbData.medications || []).find(x => x.id === medId);
+            if (!med) return;
+            med.status = med.status === 'completed' ? 'active' : 'completed';
+            saveToIDB();
+            showToast(med.status === 'completed' ? 'Курс перенесено в архів завершених 🗄' : 'Курс знову активний 🟢');
+        }
+
+        function deleteMedCourse(medId) {
+            askConfirm('Видалити курс ліків?', 'Ви впевнені, що хочете видалити цей препарат та історію його прийому?', () => {
+                dbData.medications = (dbData.medications || []).filter(x => x.id !== medId);
+                dbData.reminders = (dbData.reminders || []).filter(r => r.medId !== medId);
+                saveToIDB();
+                showToast('Курс ліків видалено', 'danger');
+            });
+        }
+
+        function renderMeds() {
+            ensureArraysExist();
+            let selectedDate = document.getElementById('medTrackerDate').value || new Date().toISOString().split('T')[0];
+            let memberFilter = document.getElementById('medFilterMember').value;
+            let statusFilter = document.getElementById('medFilterStatus').value;
+
+            let meds = (dbData.medications || []).filter(med => {
+                let matchMember = !memberFilter || med.memberId === memberFilter;
+                let st = med.status || 'active';
+                return matchMember && st === statusFilter;
+            });
+
+            let container = document.getElementById('meds-list');
+            if (meds.length === 0) {
+                container.innerHTML = `<div class="empty-state">💊 ${statusFilter === 'active' ? 'Активних курсів прийому ліків немає. Натисніть кнопку зверху або перенесіть призначення з візиту!' : 'Завершених курсів поки немає.'}</div>`;
+                return;
+            }
+
+            container.innerHTML = meds.map(med => {
+                let member = dbData.members.find(m => m.id === med.memberId);
+                let memberName = member ? member.name : 'Видалений';
+                let start = new Date(med.startDate);
+                let curDate = new Date(selectedDate);
+                let diffDays = Math.floor((curDate - start) / (1000 * 60 * 60 * 24)) + 1;
+                
+                let dayBadge = '';
+                if (diffDays < 1) dayBadge = `<span class="badge">Почнеться ${med.startDate}</span>`;
+                else if (diffDays > med.days) dayBadge = `<span class="badge badge-danger">Курс закінчився (${med.days} дн.)</span>`;
+                else dayBadge = `<span class="badge badge-success">День ${diffDays} з ${med.days}</span>`;
+
+                let totalScheduledDoses = med.days * (med.slots ? med.slots.length : 1);
+                let takenCount = Object.keys(med.logs || {}).length;
+                let progressPct = Math.min(100, Math.round((takenCount / totalScheduledDoses) * 100));
+
+                let activeRem = (dbData.reminders || []).find(r => r.medId === med.id);
+
+                let dosesHtml = (med.slots || []).map(slot => {
+                    let isTaken = med.logs && med.logs[`${selectedDate}_${slot}`];
+                    return `
+                        <button type="button" class="dose-btn ${isTaken ? 'taken' : ''}" onclick="toggleMedDose('${med.id}', '${selectedDate}', '${slot}')">
+                            <span>${isTaken ? '✅' : '⭕'}</span>
+                            <span>${slot}</span>
+                        </button>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="card" style="border-left: 5px solid var(--purple);">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; margin-bottom:6px;">
+                            <div>
+                                <span class="badge badge-purple">👤 ${memberName}</span>
+                                ${dayBadge}
+                            </div>
+                            <span class="badge" style="background:var(--bg); color:var(--text);">🍽 ${med.rule}</span>
+                        </div>
+
+                        <h3>💊 ${med.name} <span style="font-weight:normal; font-size:0.9rem; color:var(--primary);">(${med.dose})</span></h3>
+                        ${med.notes ? `<p><b>Примітка:</b> ${med.notes}</p>` : ''}
+
+                        <div style="margin-top:8px;">
+                            <div style="font-size:0.75rem; font-weight:700; color:var(--text-light);">1. ВІДМІТИТИ ПРИЙОМ НА ${selectedDate}:</div>
+                            <div class="dose-grid">${dosesHtml}</div>
+                        </div>
+
+                        <div class="reminder-panel">
+                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+                                <span style="font-size:0.78rem; font-weight:700; color:var(--purple);">🔔 2. НАГАДАТИ ПРО НАСТУПНИЙ ПРИЙОМ:</span>
+                                ${activeRem ? `<span class="badge badge-success">⏰ Таймер на ${activeRem.timeStr} <b onclick="cancelMedReminder('${med.id}')" style="cursor:pointer; margin-left:4px;">✖</b></span>` : ''}
+                            </div>
+                            <div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                                <span class="timer-chip" onclick="setMedReminderHours('${med.id}', 4)">+4 год</span>
+                                <span class="timer-chip" onclick="setMedReminderHours('${med.id}', 6)">+6 год</span>
+                                <span class="timer-chip" onclick="setMedReminderHours('${med.id}', 8)">+8 год</span>
+                                <span class="timer-chip" onclick="setMedReminderHours('${med.id}', 12)">+12 год</span>
+                                <input type="time" onchange="setMedReminderExactTime('${med.id}', this.value)" style="width:auto; padding:4px 8px; margin:0; font-size:0.8rem; height:30px;">
+                                <span class="timer-chip" style="background:var(--purple); color:white;" onclick="setNativeAndroidAlarmForMed('${med.id}')">⏰ Будильник Android</span>
+                                <span class="timer-chip" style="background:var(--purple-light);" onclick="openSystemReminder('${med.id}')">📅 Календар</span>
+                            </div>
+                        </div>
+
+                        <div style="margin-top:12px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-light);">
+                                <span>Загальний прогрес курсу:</span>
+                                <span><b>${takenCount} з ${totalScheduledDoses}</b> прийомів (${progressPct}%)</span>
+                            </div>
+                            <div class="bar-container"><div class="bar-fill" style="width:${progressPct}%; background:var(--success);"></div></div>
+                        </div>
+
+                        <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; display:flex; gap:6px; flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-sm" onclick="toggleMedCourseStatus('${med.id}')">${med.status === 'completed' ? '🔄 Відновити курс' : '🏁 Завершити курс'}</button>
+                            <button class="btn btn-warning btn-sm" onclick="openMedModal('${med.id}')">✏️ Редагувати</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteMedCourse('${med.id}')">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        /* --- HOME CABINET --- */
+        function getCabinetItemExpiryStatus(expiryMonthStr) {
+            if (!expiryMonthStr) return { status: 'ok', daysLeft: 999, label: 'Термін не вказано' };
+            let parts = expiryMonthStr.split('-');
+            let year = parseInt(parts[0]);
+            let month = parseInt(parts[1]);
+            let expDate = new Date(year, month, 0, 23, 59, 59);
+            let now = new Date();
+            let diffDays = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
+            if (diffDays < 0) {
+                return { status: 'expired', daysLeft: diffDays, label: `🔴 ПРОСТРОЧЕНО (${expiryMonthStr})` };
+            } else if (diffDays <= 60) {
+                return { status: 'expiring', daysLeft: diffDays, label: `🟡 Скоро виходить: ${expiryMonthStr} (~${diffDays} дн.)` };
+            } else {
+                return { status: 'ok', daysLeft: diffDays, label: `🟢 Придатний до: ${expiryMonthStr}` };
+            }
+        }
+
+        function openCabinetModal(id = null) {
+            pushModalState();
+            ensureArraysExist();
+            document.getElementById('cabEditId').value = id || '';
+            let nextYear = new Date().getFullYear() + 1;
+            if (id) {
+                let item = (dbData.cabinet || []).find(x => x.id === id);
+                document.getElementById('cabModalTitle').innerText = '✏️ Редагувати препарат в аптечці';
+                document.getElementById('cabName').value = item.name;
+                document.getElementById('cabCategory').value = item.category || '🌡 Жарознижувальне / Застуда';
+                if (item.expiry && item.expiry.includes('-')) {
+                    let [ey, em] = item.expiry.split('-');
+                    document.getElementById('cabExpYear').value = ey;
+                    document.getElementById('cabExpMonth').value = em;
+                }
+                document.getElementById('cabQty').value = item.qty || '';
+                document.getElementById('cabLocation').value = item.location || '';
+                document.getElementById('cabNotes').value = item.notes || '';
+            } else {
+                document.getElementById('cabModalTitle').innerText = '🧰 Додати ліки в аптечку';
+                document.getElementById('cabName').value = '';
+                document.getElementById('cabCategory').value = '🌡 Жарознижувальне / Застуда';
+                document.getElementById('cabExpYear').value = nextYear.toString();
+                document.getElementById('cabExpMonth').value = '06';
+                document.getElementById('cabQty').value = '1 упаковка';
+                document.getElementById('cabLocation').value = 'Головна аптечка';
+                document.getElementById('cabNotes').value = '';
+            }
+            document.getElementById('cabinetModal').style.display = 'flex';
+        }
+
+        function saveCabinetItem() {
+            ensureArraysExist();
+            let name = document.getElementById('cabName').value.trim();
+            if (!name) { showToast('Введіть назву препарату!', 'warning'); return; }
+
+            let editId = document.getElementById('cabEditId').value;
+            let expStr = `${document.getElementById('cabExpYear').value}-${document.getElementById('cabExpMonth').value}`;
+
+            let itemObj = {
+                id: editId || Date.now().toString(),
+                name: name,
+                category: document.getElementById('cabCategory').value,
+                expiry: expStr,
+                qty: document.getElementById('cabQty').value.trim(),
+                location: document.getElementById('cabLocation').value.trim(),
+                notes: document.getElementById('cabNotes').value.trim()
+            };
+
+            if (editId) {
+                let idx = dbData.cabinet.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.cabinet[idx] = itemObj;
+                showToast(`«${name}» оновлено в аптечці! ✏️`, 'warning');
+            } else {
+                dbData.cabinet.push(itemObj);
+                showToast(`«${name}» додано в домашню аптечку! 🧰`);
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function deleteCabinetItem(id) {
+            askConfirm('Списати з аптечки?', 'Видалити цей препарат із домашньої аптечки?', () => {
+                dbData.cabinet = (dbData.cabinet || []).filter(x => x.id !== id);
+                saveToIDB();
+                showToast('Препарат видалено з аптечки', 'danger');
+            });
+        }
+
+        function renderCabinet() {
+            ensureArraysExist();
+            let items = dbData.cabinet || [];
+            let total = items.length;
+            let expiringCount = 0;
+            let expiredCount = 0;
+
+            items.forEach(it => {
+                let st = getCabinetItemExpiryStatus(it.expiry).status;
+                if (st === 'expiring') expiringCount++;
+                if (st === 'expired') expiredCount++;
+            });
+
+            document.getElementById('cabStatTotal').innerText = total;
+            document.getElementById('cabStatExpiring').innerText = expiringCount;
+            document.getElementById('cabStatExpired').innerText = expiredCount;
+
+            let query = (document.getElementById('cabSearchQuery').value || '').toLowerCase().trim();
+            let catFilter = document.getElementById('cabFilterCat').value;
+            let expFilter = document.getElementById('cabFilterExp').value;
+
+            let filtered = items.filter(it => {
+                let text = `${it.name} ${it.category} ${it.location} ${it.notes} ${it.expiry || ''}`.toLowerCase();
+                let matchQuery = !query || text.includes(query);
+                let matchCat = !catFilter || it.category === catFilter;
+                let st = getCabinetItemExpiryStatus(it.expiry).status;
+                let matchExp = expFilter === 'all' || st === expFilter;
+                return matchQuery && matchCat && matchExp;
+            });
+
+            filtered.sort((a, b) => (a.expiry || '9999-99').localeCompare(b.expiry || '9999-99'));
+
+            let container = document.getElementById('cabinet-list');
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="empty-state">🧰 У домашній аптечці за цим фільтром нічого не знайдено</div>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(it => {
+                let expInfo = getCabinetItemExpiryStatus(it.expiry);
+                let borderCol = expInfo.status === 'expired' ? 'var(--danger)' : (expInfo.status === 'expiring' ? 'var(--warning)' : 'var(--teal)');
+                let badgeClass = expInfo.status === 'expired' ? 'badge-danger' : (expInfo.status === 'expiring' ? 'badge-money' : 'badge-success');
+
+                return `
+                    <div class="card" style="border-left: 5px solid ${borderCol};">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; margin-bottom:6px;">
+                            <span class="badge">${it.category}</span>
+                            <span class="badge ${badgeClass}">${expInfo.label}</span>
+                        </div>
+                        <h3>💊 ${it.name}</h3>
+                        <p><b>📦 Залишок:</b> ${it.qty || 'не вказано'} | <b>📍 Де лежить:</b> ${it.location || 'Аптечка'}</p>
+                        ${it.notes ? `<p><b>📝 Від чого / Дозування:</b> ${it.notes}</p>` : ''}
+                        <div style="margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; display:flex; gap:6px; flex-wrap:wrap;">
+                            <button class="btn btn-purple btn-sm" onclick="sendCabinetItemToTracker('${it.id}')">💊 Призначити курс</button>
+                            <button class="btn btn-warning btn-sm" onclick="openCabinetModal('${it.id}')">✏️ Редагувати</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteCabinetItem('${it.id}')">🗑️ Списати</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
