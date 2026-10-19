@@ -1,0 +1,1429 @@
+/* ==========================================
+           10. VISITS, HOME ILLNESSES, MEDIA & AUDIO
+        ========================================== */
+        function openVisitModal(id = null) {
+            ensureArraysExist();
+            if (dbData.members.length === 0) { showToast('Спочатку додайте члена родини!', 'warning'); return; }
+            pushModalState();
+            let select = document.getElementById('vMemberId');
+            select.innerHTML = dbData.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+
+            let savedDocSel = document.getElementById('vSavedDoctorSelect');
+            savedDocSel.innerHTML = '<option value="">— Ввести вручну або обрати з довідника —</option>' +
+                (dbData.doctors || []).map(d => `<option value="${d.id}">👨‍⚕️ ${d.spec ? d.spec + ': ' : ''}${d.name} ${d.clinic ? '(' + d.clinic + ')' : ''}</option>`).join('');
+            
+            document.getElementById('vEditId').value = id || '';
+            currentVisitMedia = [];
+            currentVisitAudio = [];
+            document.getElementById('vMediaFilePicker').value = '';
+            document.getElementById('vAudioFiles').value = '';
+            renderTagChipsForInput('vTagChips', 'vTags');
+
+            if (id) {
+                let v = dbData.visits.find(x => x.id === id);
+                document.getElementById('visitModalTitle').innerText = '✏️ Редагувати візит до лікаря';
+                select.value = v.memberId;
+                document.getElementById('vDate').value = v.date;
+                document.getElementById('vDoctor').value = v.doctor || '';
+                document.getElementById('vClinic').value = v.clinic || '';
+                document.getElementById('vReason').value = v.reason || '';
+                document.getElementById('vDiagnosis').value = v.diagnosis || '';
+                document.getElementById('vTreatment').value = v.treatment || '';
+                document.getElementById('vCostDoctor').value = v.costDoctor || '';
+                document.getElementById('vCostMeds').value = v.costMeds || '';
+                document.getElementById('vTags').value = v.tags || '';
+                currentVisitMedia = v.media ? JSON.parse(JSON.stringify(v.media)) : [];
+                currentVisitAudio = v.audio ? JSON.parse(JSON.stringify(v.audio)) : [];
+            } else {
+                document.getElementById('visitModalTitle').innerText = '🩺 Новий візит до лікаря';
+                document.getElementById('vDate').value = new Date().toISOString().split('T')[0];
+                document.getElementById('vDoctor').value = '';
+                document.getElementById('vClinic').value = '';
+                document.getElementById('vReason').value = '';
+                document.getElementById('vDiagnosis').value = '';
+                document.getElementById('vTreatment').value = '';
+                document.getElementById('vCostDoctor').value = '';
+                document.getElementById('vCostMeds').value = '';
+                document.getElementById('vTags').value = '';
+            }
+            renderMediaItemsList('vMediaItemsList');
+            renderVisitAudioPreview();
+            document.getElementById('visitModal').style.display = 'flex';
+        }
+
+        function openHomeIllnessModal(id = null) {
+            ensureArraysExist();
+            if (dbData.members.length === 0) { showToast('Спочатку додайте члена родини!', 'warning'); return; }
+            pushModalState();
+            let select = document.getElementById('hMemberId');
+            select.innerHTML = dbData.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+            
+            document.getElementById('hEditId').value = id || '';
+            currentVisitMedia = [];
+            document.getElementById('hMediaFilePicker').value = '';
+            renderTagChipsForInput('hTagChips', 'hTags');
+
+            if (id) {
+                let v = dbData.visits.find(x => x.id === id);
+                document.getElementById('hModalTitle').innerText = '✏️ Редагувати домашню недугу';
+                select.value = v.memberId;
+                document.getElementById('hDate').value = v.date;
+                document.getElementById('hDiagnosis').value = v.diagnosis || '';
+                document.getElementById('hReason').value = v.reason || '';
+                document.getElementById('hTreatment').value = v.treatment || '';
+                document.getElementById('hCostMeds').value = v.costMeds || '';
+                document.getElementById('hTags').value = v.tags || '';
+                currentVisitMedia = v.media ? JSON.parse(JSON.stringify(v.media)) : [];
+            } else {
+                document.getElementById('hModalTitle').innerText = '🏠 Нова домашня недуга';
+                document.getElementById('hDate').value = new Date().toISOString().split('T')[0];
+                document.getElementById('hDiagnosis').value = '';
+                document.getElementById('hReason').value = '';
+                document.getElementById('hTreatment').value = '';
+                document.getElementById('hCostMeds').value = '';
+                document.getElementById('hTags').value = '#самолікування';
+            }
+            renderMediaItemsList('hMediaItemsList');
+            document.getElementById('homeIllnessModal').style.display = 'flex';
+        }
+
+        async function addNewMediaItem(input, containerId) {
+            if (!input.files || input.files.length === 0) return;
+            for (let file of Array.from(input.files)) {
+                let fNameLower = (file.name || '').toLowerCase();
+                let isPdf = file.type === 'application/pdf' || fNameLower.endsWith('.pdf');
+                let isVideo = file.type.startsWith('video/') || fNameLower.endsWith('.mp4') || fNameLower.endsWith('.mov') || fNameLower.endsWith('.webm');
+
+                if (!isPdf && !isVideo && file.type.startsWith('image/')) {
+                    let compressed = await compressImage(file, 2200, 0.88);
+                    currentVisitMedia.push({
+                        type: 'image',
+                        data: compressed,
+                        title: file.name.replace(/\.[^/.]+$/, "").substring(0, 32),
+                        tags: '#аналізи'
+                    });
+                } else {
+                    let reader = new FileReader();
+                    await new Promise((res) => {
+                        reader.onload = function(evt) {
+                            let fType = isPdf ? 'pdf' : (isVideo ? 'video' : 'image');
+                            currentVisitMedia.push({
+                                type: fType,
+                                data: evt.target.result,
+                                title: file.name.replace(/\.[^/.]+$/, "").substring(0, 32),
+                                tags: fType === 'pdf' ? '#аналізи #виписка' : '#відео'
+                            });
+                            res();
+                        };
+                        reader.readAsDataURL(file);
+                    });
+                }
+            }
+            renderMediaItemsList(containerId);
+            input.value = '';
+            showToast('Файл(и) прикріплено!');
+        }
+
+        function renderMediaItemsList(containerId) {
+            let container = document.getElementById(containerId);
+            let tagsList = ['#аналізи', '#рентген', '#УЗД', '#кров', '#рецепт', '#виписка'];
+            container.innerHTML = currentVisitMedia.map((m, idx) => `
+                <div class="media-card">
+                    <div class="thumb-box" onclick="openCurrentMediaPreview(${idx})">
+                        ${m.type === 'video' ? `<span style="font-size:1.3rem;">🎬</span>` : 
+                          (m.type === 'pdf' ? `<span>📄 PDF</span>` : `<img src="${m.data}" class="thumb">`)}
+                    </div>
+                    <div style="flex:1;">
+                        <input type="text" value="${m.title || ''}" placeholder="Назва документа (напр. Рентген)" oninput="currentVisitMedia[${idx}].title = this.value" style="margin:2px 0; padding:6px; font-size:0.82rem;">
+                        <input type="text" id="mediaTag_${containerId}_${idx}" value="${m.tags || ''}" placeholder="#хештеги" oninput="currentVisitMedia[${idx}].tags = this.value" style="margin:2px 0; padding:6px; font-size:0.82rem;">
+                        <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:3px;">
+                            ${tagsList.map(t => `<span style="font-size:0.68rem; background:var(--card-bg); border:1px solid var(--border); padding:1px 6px; border-radius:10px; cursor:pointer;" onclick="addTagToMediaItem(${idx}, '${t}', '${containerId}')">${t}</span>`).join('')}
+                        </div>
+                    </div>
+                    <button type="button" onclick="currentVisitMedia.splice(${idx},1); renderMediaItemsList('${containerId}');" style="background:var(--danger); color:white; border:none; border-radius:50%; width:26px; height:26px; font-weight:bold; cursor:pointer;">×</button>
+                </div>
+            `).join('');
+        }
+
+        function openCurrentMediaPreview(idx) {
+            if (currentVisitMedia[idx]) openMediaViewer(currentVisitMedia[idx]);
+        }
+
+        function openVisitMediaById(visitId, mediaIdx) {
+            let v = dbData.visits.find(x => x.id === visitId);
+            if (v && v.media && v.media[mediaIdx]) {
+                openMediaViewer(v.media[mediaIdx]);
+            }
+        }
+
+        function addTagToMediaItem(idx, tag, containerId) {
+            let cur = currentVisitMedia[idx].tags || '';
+            if (!cur.includes(tag)) {
+                currentVisitMedia[idx].tags = cur ? (cur + ' ' + tag) : tag;
+                renderMediaItemsList(containerId);
+            }
+        }
+
+        document.getElementById('vAudioFiles').addEventListener('change', function(e) {
+            if (!e.target.files) return;
+            Array.from(e.target.files).forEach(file => {
+                let reader = new FileReader();
+                reader.onload = function(evt) {
+                    currentVisitAudio.push({ name: file.name || 'Аудіозапис прийому', data: evt.target.result });
+                    renderVisitAudioPreview();
+                    showToast('Аудіозапис додано 🎙');
+                };
+                reader.readAsDataURL(file);
+            });
+        });
+
+        async function toggleVoiceRecording() {
+            let btn = document.getElementById('recordAudioBtn');
+            let status = document.getElementById('recordingStatus');
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                btn.innerHTML = '🔴 Записати на диктофон';
+                btn.className = 'btn btn-purple btn-sm';
+                status.style.display = 'none';
+                return;
+            }
+            if (window.AndroidNative && typeof window.AndroidNative.requestMicPermission === 'function') {
+                window.AndroidNative.requestMicPermission();
+            }
+            try {
+                let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                mediaRecorder.onstop = () => {
+                    let blob = new Blob(audioChunks, { type: 'audio/webm' });
+                    let reader = new FileReader();
+                    reader.onload = function(evt) {
+                        let timeStr = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+                        currentVisitAudio.push({ name: `Диктофон (${timeStr})`, data: evt.target.result });
+                        renderVisitAudioPreview();
+                        showToast('Запис диктофона збережено! 🎙');
+                    };
+                    reader.readAsDataURL(blob);
+                    stream.getTracks().forEach(t => t.stop());
+                };
+                mediaRecorder.start();
+                btn.innerHTML = '⏹ Зупинити запис';
+                btn.className = 'btn btn-danger btn-sm';
+                status.style.display = 'block';
+            } catch (err) {
+                showToast('Дозвольте доступ до мікрофона у спливаючому вікні або скористайтеся кнопкою «Вибрати аудіофайл»', 'warning');
+            }
+        }
+
+        function renderVisitAudioPreview() {
+            document.getElementById('vAudioPreview').innerHTML = currentVisitAudio.map((a, idx) => `
+                <div class="audio-item">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.8rem; font-weight:600;">🎙 ${a.name}</span>
+                        <button type="button" onclick="currentVisitAudio.splice(${idx},1); renderVisitAudioPreview();" style="background:var(--danger); color:white; border:none; border-radius:6px; padding:3px 8px; font-size:0.75rem; cursor:pointer;">×</button>
+                    </div>
+                    <audio controls src="${a.data}"></audio>
+                </div>
+            `).join('');
+        }
+
+        function saveVisit() {
+            ensureArraysExist();
+            let doctor = document.getElementById('vDoctor').value.trim();
+            let diagnosis = document.getElementById('vDiagnosis').value.trim();
+            if (!doctor && !diagnosis) { showToast('Вкажіть лікаря або діагноз!', 'warning'); return; }
+
+            let editId = document.getElementById('vEditId').value;
+            let record = {
+                id: editId || Date.now().toString(),
+                type: 'doctor',
+                memberId: document.getElementById('vMemberId').value,
+                date: document.getElementById('vDate').value,
+                doctor: doctor || 'Консультація / Обстеження',
+                clinic: document.getElementById('vClinic').value.trim(),
+                reason: document.getElementById('vReason').value.trim(),
+                diagnosis: diagnosis,
+                treatment: document.getElementById('vTreatment').value.trim(),
+                costDoctor: parseFloat(document.getElementById('vCostDoctor').value) || 0,
+                costMeds: parseFloat(document.getElementById('vCostMeds').value) || 0,
+                tags: document.getElementById('vTags').value.trim(),
+                media: currentVisitMedia,
+                audio: currentVisitAudio
+            };
+
+            if (editId) {
+                let idx = dbData.visits.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.visits[idx] = record;
+                showToast('Запис про візит відредаговано! ✏️', 'warning');
+            } else {
+                dbData.visits.push(record);
+                showToast('Візит до лікаря успішно додано! ✅');
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function saveHomeIllness() {
+            ensureArraysExist();
+            let diagnosis = document.getElementById('hDiagnosis').value.trim();
+            if (!diagnosis) { showToast('Вкажіть, що сталося (стан або симптоми)!', 'warning'); return; }
+
+            let editId = document.getElementById('hEditId').value;
+            let record = {
+                id: editId || Date.now().toString(),
+                type: 'home',
+                memberId: document.getElementById('hMemberId').value,
+                date: document.getElementById('hDate').value,
+                doctor: 'Домашнє лікування',
+                clinic: 'Вдома',
+                reason: document.getElementById('hReason').value.trim() || 'Домашня недуга',
+                diagnosis: diagnosis,
+                treatment: document.getElementById('hTreatment').value.trim(),
+                costDoctor: 0,
+                costMeds: parseFloat(document.getElementById('hCostMeds').value) || 0,
+                tags: document.getElementById('hTags').value.trim(),
+                media: currentVisitMedia,
+                audio: []
+            };
+
+            if (editId) {
+                let idx = dbData.visits.findIndex(x => x.id === editId);
+                if (idx !== -1) dbData.visits[idx] = record;
+                showToast('Домашній запис оновлено! ✏️', 'warning');
+            } else {
+                dbData.visits.push(record);
+                showToast('Домашню недугу додано в історію! 🏠');
+            }
+            closeModals();
+            saveToIDB();
+        }
+
+        function deleteRecord(id) {
+            askConfirm('Видалити медичний запис?', 'Цю дію неможливо скасувати. Усі прикріплені до цього візиту фото та аудіо також будуть видалені.', () => {
+                dbData.visits = dbData.visits.filter(v => v.id !== id);
+                saveToIDB();
+                showToast('Запис видалено з бази', 'danger');
+            });
+        }
+
+        /* ==========================================
+           11. RENDERING VIEWS
+        ========================================== */
+        function updateDropdowns() {
+            ensureArraysExist();
+            let memberOptions = dbData.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+            
+            ['filterMember', 'medFilterMember', 'docFilterMember', 'analyticsMember', 'reportMemberSelect'].forEach(selId => {
+                let el = document.getElementById(selId);
+                if (!el) return;
+                let cur = el.value;
+                el.innerHTML = `<option value="">Усі члени родини</option>` + memberOptions;
+                el.value = cur;
+            });
+
+            let yearEl = document.getElementById('filterYear');
+            if (yearEl) {
+                let curY = yearEl.value;
+                let yearsSet = new Set();
+                dbData.visits.forEach(v => {
+                    if (v.date && v.date.length >= 4) yearsSet.add(v.date.substring(0, 4));
+                });
+                let sortedYears = Array.from(yearsSet).sort((a,b) => b.localeCompare(a));
+                yearEl.innerHTML = `<option value="">Усі роки</option>` + sortedYears.map(y => `<option value="${y}">${y} рік</option>`).join('');
+                yearEl.value = curY;
+            }
+
+            let tlEl = document.getElementById('timelineMemberSelect');
+            if (tlEl) {
+                let curTl = tlEl.value;
+                tlEl.innerHTML = memberOptions;
+                if (curTl && dbData.members.some(m => m.id === curTl)) tlEl.value = curTl;
+            }
+        }
+
+        function renderVisits() {
+            ensureArraysExist();
+            let query = document.getElementById('searchQuery').value.toLowerCase().trim();
+            let memberFilter = document.getElementById('filterMember').value;
+            let yearFilter = document.getElementById('filterYear') ? document.getElementById('filterYear').value : '';
+            let typeFilter = document.getElementById('filterType').value;
+            let sortOrder = document.getElementById('sortOrder').value;
+
+            let filtered = dbData.visits.filter(v => {
+                let member = dbData.members.find(m => m.id === v.memberId);
+                let memberName = member ? member.name.toLowerCase() : '';
+                let mediaText = (v.media || []).map(m => (m.title + ' ' + m.tags)).join(' ').toLowerCase();
+                let dateTokens = buildDateSearchTokens(v.date).toLowerCase();
+                let fullText = `${dateTokens} ${v.doctor} ${v.clinic} ${v.diagnosis} ${v.reason} ${v.treatment} ${v.tags || ''} ${mediaText} ${memberName}`.toLowerCase();
+                
+                let matchQuery = !query || fullText.includes(query);
+                let matchMember = !memberFilter || v.memberId === memberFilter;
+                let matchYear = !yearFilter || (v.date && v.date.startsWith(yearFilter));
+                let matchType = !typeFilter || (typeFilter === 'home' ? v.type === 'home' : v.type !== 'home');
+                return matchQuery && matchMember && matchYear && matchType;
+            });
+
+            filtered.sort((a, b) => {
+                if (sortOrder === 'cost_desc') {
+                    let costA = (Number(a.costDoctor)||0) + (Number(a.costMeds)||0);
+                    let costB = (Number(b.costDoctor)||0) + (Number(b.costMeds)||0);
+                    return costB - costA;
+                }
+                let dateA = new Date(a.date), dateB = new Date(b.date);
+                return sortOrder === 'desc' ? dateB - dateA : dateA - dateB;
+            });
+
+            let vDiv = document.getElementById('visits-list');
+            if (filtered.length === 0) {
+                vDiv.innerHTML = `<div class="empty-state">🔍 Записів не знайдено ${query ? `<br><button class="btn btn-secondary btn-sm" style="margin-top:10px;" onclick="clearSearchInput()">Показати всі записи</button>` : ''}</div>`;
+                return;
+            }
+
+            vDiv.innerHTML = filtered.map(v => {
+                let member = dbData.members.find(m => m.id === v.memberId);
+                let memberName = member ? member.name : 'Видалений';
+                let isHome = v.type === 'home';
+                let mediaList = v.media || [];
+                let audioList = v.audio || [];
+                let costDoc = Number(v.costDoctor) || 0;
+                let costMeds = Number(v.costMeds) || 0;
+                let totalCost = costDoc + costMeds;
+
+                return `
+                    <div class="card" style="border-left: 5px solid ${isHome ? 'var(--teal)' : 'var(--primary)'};">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; margin-bottom:6px;">
+                            <div>
+                                <span class="badge" onclick="setSearchQuery('${v.date ? v.date.substring(0,7).replace('-','.') : ''}')" style="cursor:pointer;">📅 ${v.date}</span>
+                                <span class="badge badge-purple">👤 ${memberName}</span>
+                                <span class="badge ${isHome ? 'badge-home' : ''}">${isHome ? '🏠 Вдома' : '🩺 Лікар'}</span>
+                            </div>
+                            ${totalCost > 0 ? `<span class="badge badge-money">💰 ${totalCost} ₴</span>` : ''}
+                        </div>
+
+                        <h3>${isHome ? '🏠 ' : '🩺 '}${v.diagnosis || v.doctor}</h3>
+                        ${!isHome ? `<p><b>Спеціаліст та клініка:</b> ${v.doctor}${v.clinic ? `(${v.clinic})` : ''}</p>` : ''}
+                        ${v.reason ? `<p><b>Симптоми / Причина:</b> ${v.reason}</p>` : ''}
+                        ${v.treatment ? `<p><b>💊 Лікування:</b> ${v.treatment}</p>` : ''}
+                        
+                        ${v.tags ? `<div style="margin-top:6px;">${v.tags.split(' ').filter(Boolean).map(t => `<span class="chip" style="padding:2px 8px; font-size:0.72rem;" onclick="setSearchQuery('${t}')">${t}</span>`).join(' ')}</div>` : ''}
+
+                        ${mediaList.length > 0 ? `
+                            <div style="margin-top:10px;">
+                                ${mediaList.map((m, mIdx) => `
+                                    <div class="attachment-row">
+                                        <div class="attachment-top" onclick="openVisitMediaById('${v.id}', ${mIdx})" style="cursor:pointer;">
+                                            <span style="color:var(--primary); font-weight:700; font-size:0.86rem;">
+                                                ${m.type === 'pdf' ? '📄 PDF:' : (m.type === 'video' ? '🎬 Відео:' : '🖼️ Фото:')} ${m.title || 'Документ'}
+                                            </span>
+                                            <span style="font-size:0.72rem; color:var(--text-light);">${m.tags || ''}</span>
+                                        </div>
+                                        <div class="attachment-actions">
+                                            <button class="btn-xs" onclick="openVisitMediaById('${v.id}', ${mIdx})">🔍 Переглянути</button>
+                                            <button class="btn-xs" onclick="handleSingleMediaAction('${v.id}', ${mIdx}, 'open')">📱 Відкрити</button>
+                                            <button class="btn-xs" onclick="handleSingleMediaAction('${v.id}', ${mIdx}, 'share')">📤 Поділитися</button>
+                                            <button class="btn-xs" onclick="handleSingleMediaAction('${v.id}', ${mIdx}, 'download')">⬇️ Скачати</button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+
+                        ${audioList.length > 0 ? `
+                            <div style="margin-top: 8px;">
+                                ${audioList.map((a, aIdx) => `
+                                    <div class="audio-item">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                                            <span style="font-size:0.8rem; font-weight:700;">🎙 ${a.name}</span>
+                                            <div style="display:flex; gap:4px;">
+                                                <button class="btn-xs" onclick="handleAudioAction('${v.id}', ${aIdx}, 'share')">📤 Поділитися</button>
+                                                <button class="btn-xs" onclick="handleAudioAction('${v.id}', ${aIdx}, 'download')">⬇️ Скачати</button>
+                                            </div>
+                                        </div>
+                                        <audio controls src="${a.data}"></audio>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+
+                        <div style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; display:flex; gap:6px; flex-wrap:wrap;">
+                            <button class="btn btn-purple btn-sm" onclick="sendVisitTreatmentToTracker('${v.id}')">💊 В трекер</button>
+                            <button class="btn btn-warning btn-sm" onclick="${isHome ? `openHomeIllnessModal('${v.id}')` : `openVisitModal('${v.id}')`}">✏️</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteRecord('${v.id}')">🗑️</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderDocumentsArchive() {
+            ensureArraysExist();
+            let query = document.getElementById('docSearchQuery').value.toLowerCase().trim();
+            let memberFilter = document.getElementById('docFilterMember').value;
+
+            let allDocs = [];
+            dbData.visits.forEach(v => {
+                let member = dbData.members.find(m => m.id === v.memberId);
+                let memberName = member ? member.name : 'Видалений';
+                if (v.media && Array.isArray(v.media)) {
+                    v.media.forEach((m, mIdx) => {
+                        allDocs.push({
+                            visitId: v.id,
+                            mediaIdx: mIdx,
+                            date: v.date,
+                            memberId: v.memberId,
+                            memberName: memberName,
+                            diagnosis: v.diagnosis || v.doctor,
+                            visitTags: v.tags || '',
+                            media: m
+                        });
+                    });
+                }
+            });
+
+            let filtered = allDocs.filter(d => {
+                let matchMember = !memberFilter || d.memberId === memberFilter;
+                let dateTokens = buildDateSearchTokens(d.date).toLowerCase();
+                let text = `${dateTokens} ${d.media.title} ${d.media.tags} ${d.visitTags} ${d.diagnosis} ${d.memberName}`.toLowerCase();
+                return matchMember && (!query || text.includes(query));
+            });
+
+            filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            let container = document.getElementById('documents-archive-list');
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="empty-state">📁 Прикріплених документів чи фото за цим запитом немає</div>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(d => `
+                <div class="card">
+                    <div style="display:flex; gap:12px; align-items:center;">
+                        <div class="thumb-box" onclick="openVisitMediaById('${d.visitId}', ${d.mediaIdx})">
+                            ${d.media.type === 'video' ? `<span style="font-size:1.5rem;">🎬</span>` : 
+                              (d.media.type === 'pdf' ? `<span>📄 PDF</span>` : `<img src="${d.media.data}" class="thumb">`)}
+                        </div>
+                        <div style="flex:1;">
+                            <span class="badge">${d.date}</span>
+                            <span class="badge badge-purple">${d.memberName}</span>
+                            <h3 style="font-size:0.95rem; margin-top:4px; cursor:pointer; color:var(--primary);" onclick="openVisitMediaById('${d.visitId}', ${d.mediaIdx})">${d.media.title || 'Документ'}</h3>
+                            <p style="font-size:0.8rem;">Подія: <b>${d.diagnosis}</b></p>
+                            <div>${(d.media.tags || '').split(' ').filter(Boolean).map(t => `<span class="badge" style="background:var(--bg); color:var(--text-light);">${t}</span>`).join('')}</div>
+                        </div>
+                    </div>
+                    <div class="attachment-actions" style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">
+                        <button class="btn-xs" onclick="openVisitMediaById('${d.visitId}', ${d.mediaIdx})">🔍 Читати</button>
+                        <button class="btn-xs" onclick="handleSingleMediaAction('${d.visitId}', ${d.mediaIdx}, 'open')">📱 Відкрити</button>
+                        <button class="btn-xs" onclick="handleSingleMediaAction('${d.visitId}', ${d.mediaIdx}, 'share')">📤 Поділитися</button>
+                        <button class="btn-xs" onclick="handleSingleMediaAction('${d.visitId}', ${d.mediaIdx}, 'download')">⬇️ Скачати</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderTimeline() {
+            ensureArraysExist();
+            let memberId = document.getElementById('timelineMemberSelect').value;
+            let container = document.getElementById('timeline-content');
+            if (!memberId) { container.innerHTML = '<div class="empty-state">Оберіть члена родини</div>'; return; }
+
+            let records = dbData.visits.filter(v => v.memberId === memberId).sort((a, b) => new Date(b.date) - new Date(a.date));
+            if (records.length === 0) { container.innerHTML = '<div class="empty-state">Записів для цього члена родини поки немає</div>'; return; }
+
+            container.innerHTML = `<div class="timeline-container">` + records.map(v => {
+                let isHome = v.type === 'home';
+                let totalCost = (Number(v.costDoctor)||0) + (Number(v.costMeds)||0);
+                return `
+                    <div class="timeline-item ${isHome ? 'home-event' : ''}">
+                        <div class="card" style="margin-bottom:0;">
+                            <div style="display:flex; justify-content:space-between;">
+                                <span class="badge">${v.date}</span>
+                                ${totalCost > 0 ? `<span class="badge badge-money">${totalCost} ₴</span>` : ''}
+                            </div>
+                            <h3 style="margin-top:6px;">${isHome ? '🏠 ' : '🩺 '}${v.diagnosis || v.doctor}</h3>
+                            ${!isHome ? `<p><b>Лікар:</b> ${v.doctor}</p>` : ''}
+                            ${v.treatment ? `<p><b>Лікування:</b> ${v.treatment}</p>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('') + `</div>`;
+        }
+
+        function renderAnalytics() {
+            ensureArraysExist();
+            let memberFilter = document.getElementById('analyticsMember').value;
+            let periodFilter = document.getElementById('analyticsPeriod').value;
+            let queryFilter = document.getElementById('analyticsQuery').value.toLowerCase().trim();
+            let now = new Date();
+
+            let filtered = dbData.visits.filter(v => {
+                if (memberFilter && v.memberId !== memberFilter) return false;
+                if (periodFilter === 'year_current') {
+                    if (new Date(v.date).getFullYear() !== now.getFullYear()) return false;
+                } else if (periodFilter !== 'all') {
+                    let days = parseInt(periodFilter);
+                    if ((now - new Date(v.date)) / (1000 * 60 * 60 * 24) > days) return false;
+                }
+                if (queryFilter) {
+                    let dateTokens = buildDateSearchTokens(v.date).toLowerCase();
+                    let text = `${dateTokens} ${v.doctor} ${v.diagnosis} ${v.reason} ${v.treatment} ${v.tags || ''}`.toLowerCase();
+                    if (!text.includes(queryFilter)) return false;
+                }
+                return true;
+            });
+
+            let totalDocSpent = filtered.reduce((s, v) => s + (Number(v.costDoctor)||0), 0);
+            let totalMedsSpent = filtered.reduce((s, v) => s + (Number(v.costMeds)||0), 0);
+            let totalSpent = totalDocSpent + totalMedsSpent;
+            let docCount = filtered.filter(v => v.type !== 'home').length;
+            let homeCount = filtered.filter(v => v.type === 'home').length;
+
+            document.getElementById('anTotalSpent').innerText = totalSpent.toLocaleString() + ' ₴';
+            document.getElementById('anDoctorSpent').innerText = totalDocSpent.toLocaleString() + ' ₴';
+            document.getElementById('anMedsSpent').innerText = totalMedsSpent.toLocaleString() + ' ₴';
+            document.getElementById('anTotalEvents').innerText = `${filtered.length} (${docCount} / ${homeCount})`;
+
+            let memberStats = {};
+            dbData.members.forEach(m => { memberStats[m.id] = { name: m.name, spent: 0, count: 0 }; });
+            filtered.forEach(v => {
+                if (memberStats[v.memberId]) {
+                    memberStats[v.memberId].spent += (Number(v.costDoctor)||0) + (Number(v.costMeds)||0);
+                    memberStats[v.memberId].count += 1;
+                }
+            });
+            let sortedMembers = Object.values(memberStats).filter(x => x.count > 0 || x.spent > 0).sort((a,b) => b.spent - a.spent);
+            let maxMemSpent = sortedMembers.length > 0 ? Math.max(...sortedMembers.map(x => x.spent), 1) : 1;
+            document.getElementById('analyticsMembersBars').innerHTML = sortedMembers.length === 0 ? '<p>Немає даних</p>' :
+                sortedMembers.map(m => `
+                    <div style="margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85rem;">
+                            <span><b>👤 ${m.name}</b> (${m.count} зап.)</span>
+                            <span><b>${m.spent.toLocaleString()} ₴</b></span>
+                        </div>
+                        <div class="bar-container"><div class="bar-fill" style="width:${Math.round((m.spent/maxMemSpent)*100)}%; background:var(--purple);"></div></div>
+                    </div>
+                `).join('');
+
+            let diagCosts = {};
+            let diagFreq = {};
+            filtered.forEach(v => {
+                let d = (v.diagnosis || v.doctor || 'Інше').trim();
+                let c = (Number(v.costDoctor)||0) + (Number(v.costMeds)||0);
+                diagCosts[d] = (diagCosts[d] || 0) + c;
+                diagFreq[d] = (diagFreq[d] || 0) + 1;
+            });
+
+            let sortedCostDiags = Object.entries(diagCosts).filter(x => x[1] > 0).sort((a,b) => b[1] - a[1]).slice(0, 5);
+            let maxDiagCost = sortedCostDiags.length > 0 ? sortedCostDiags[0][1] : 1;
+            document.getElementById('analyticsCostDiagnosesBars').innerHTML = sortedCostDiags.length === 0 ? '<p>Немає даних про витрати</p>' :
+                sortedCostDiags.map(([d, cost]) => `
+                    <div style="margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85rem;">
+                            <span><b>${d}</b></span>
+                            <span style="color:#d97706; font-weight:bold;">${cost.toLocaleString()} ₴</span>
+                        </div>
+                        <div class="bar-container"><div class="bar-fill" style="width:${Math.round((cost/maxDiagCost)*100)}%; background:var(--warning);"></div></div>
+                    </div>
+                `).join('');
+
+            let sortedFreqDiags = Object.entries(diagFreq).sort((a,b) => b[1] - a[1]).slice(0, 5);
+            let maxFreq = sortedFreqDiags.length > 0 ? sortedFreqDiags[0][1] : 1;
+            document.getElementById('analyticsFreqDiagnosesBars').innerHTML = sortedFreqDiags.length === 0 ? '<p>Немає даних</p>' :
+                sortedFreqDiags.map(([d, count]) => `
+                    <div style="margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85rem;">
+                            <span><b>${d}</b></span>
+                            <span>${count} раз(и)</span>
+                        </div>
+                        <div class="bar-container"><div class="bar-fill" style="width:${Math.round((count/maxFreq)*100)}%;"></div></div>
+                    </div>
+                `).join('');
+
+            let months = {};
+            filtered.forEach(v => {
+                if (v.date) {
+                    let mKey = v.date.substring(0, 7);
+                    if (!months[mKey]) months[mKey] = { count: 0, spent: 0 };
+                    months[mKey].count += 1;
+                    months[mKey].spent += (Number(v.costDoctor)||0) + (Number(v.costMeds)||0);
+                }
+            });
+            let sortedMonths = Object.entries(months).sort((a,b) => b[0].localeCompare(a[0])).slice(0, 6);
+            let maxMSpent = sortedMonths.length > 0 ? Math.max(...sortedMonths.map(x => x[1].spent), 1) : 1;
+            document.getElementById('analyticsMonthlyBars').innerHTML = sortedMonths.length === 0 ? '<p>Немає записів</p>' :
+                sortedMonths.map(([m, obj]) => `
+                    <div style="margin-bottom:10px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85rem;">
+                            <span>📅 <b>${m}</b> (${obj.count} подій)</span>
+                            <span><b>${obj.spent.toLocaleString()} ₴</b></span>
+                        </div>
+                        <div class="bar-container"><div class="bar-fill" style="width:${Math.round((obj.spent/maxMSpent)*100)}%; background:var(--teal);"></div></div>
+                    </div>
+                `).join('');
+        }
+
+        /* ==========================================
+           12. PRINTABLE HTML / PDF MEDICAL REPORT
+        ========================================== */
+        function openPrintableReportModal(memberId = '') {
+            pushModalState();
+            updateDropdowns();
+            let sel = document.getElementById('reportMemberSelect');
+            if (sel) sel.value = memberId || '';
+            generatePrintableReportHTML();
+            document.getElementById('printableReportModal').style.display = 'flex';
+        }
+
+        function generatePrintableReportHTML() {
+            let memberId = document.getElementById('reportMemberSelect').value;
+            let membersToInclude = memberId ? dbData.members.filter(m => m.id === memberId) : dbData.members;
+            let container = document.getElementById('printableReportContainer');
+
+            if (membersToInclude.length === 0) {
+                container.innerHTML = '<p style="text-align:center; padding:20px;">Немає даних для формування виписки</p>';
+                return;
+            }
+
+            let html = `
+                <div style="border-bottom: 2px solid var(--primary); padding-bottom: 8px; margin-bottom: 14px;">
+                    <h2 style="color:var(--primary); font-size:1.25rem;">🩺 Медична виписка з амбулаторної картки</h2>
+                    <p style="font-size:0.8rem; color:var(--text-light);">Дата формування документа: ${new Date().toLocaleDateString('uk-UA')}</p>
+                </div>
+            `;
+
+            membersToInclude.forEach(m => {
+                let ageStr = calculateAge(m.birthDate);
+                let visits = dbData.visits.filter(v => v.memberId === m.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                let activeMeds = (dbData.medications || []).filter(med => med.memberId === m.id && (med.status || 'active') === 'active');
+
+                html += `
+                    <div style="margin-bottom: 22px;">
+                        <div style="background:var(--primary-light); padding:10px 12px; border-radius:10px; margin-bottom:8px;">
+                            <h3 style="color:var(--primary); margin-bottom:4px;">👤 Пацієнт: ${m.name} ${ageStr ? `(${ageStr})` : ''}</h3>
+                            <p style="font-size:0.84rem; margin:0;"><b>Дата народження:</b> ${m.birthDate || '—'} | <b>Група крові:</b> ${m.bloodGroup || '—'}</p>
+                            <p style="font-size:0.84rem; margin:2px 0 0 0; color:var(--danger);"><b>⚠️ Алергії:</b> ${m.allergies || 'немає'}</p>
+                            ${m.chronic ? `<p style="font-size:0.84rem; margin:2px 0 0 0;"><b>📌 Хронічні стани:</b> ${m.chronic}</p>` : ''}
+                        </div>
+                `;
+
+                if (activeMeds.length > 0) {
+                    html += `<p style="font-size:0.84rem; margin-bottom:6px;"><b>💊 Активний прийом препаратів:</b> ${activeMeds.map(x => `${x.name} (${x.dose},${x.rule})`).join('; ')}</p>`;
+                }
+
+                if (visits.length === 0) {
+                    html += `<p style="font-size:0.84rem; color:var(--text-light);">Записів про звернення немає.</p>`;
+                } else {
+                    html += `
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:18%;">Дата</th>
+                                    <th style="width:27%;">Лікар / Заклад</th>
+                                    <th style="width:25%;">Діагноз / Скарги</th>
+                                    <th style="width:30%;">Призначене лікування</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${visits.map(v => `
+                                    <tr>
+                                        <td><b>${v.date}</b><br><span style="font-size:0.7rem; color:var(--text-light);">${v.type === 'home' ? 'Вдома' : 'Візит'}</span></td>
+                                        <td>${v.doctor \vert{}\vert{} '—'}${v.clinic ? `<br><small>${v.clinic}</small>` : ''}</td>
+                                        <td><b>${v.diagnosis \vert{}\vert{} '—'}</b>${v.reason ? `<br><small>${v.reason}</small>` : ''}</td>
+                                        <td>${v.treatment || '—'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                }
+                html += `</div>`;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function printOrSavePdfReport() {
+            let jobName = `MedCard_Vypyska_${new Date().toISOString().split('T')[0]}`;
+            if (window.AndroidNative && typeof window.AndroidNative.printCurrentPage === 'function') {
+                window.AndroidNative.printCurrentPage(jobName);
+                return;
+            }
+            window.print();
+        }
+
+        function shareHtmlReportFile() {
+            let content = document.getElementById('printableReportContainer').innerHTML;
+            let fullHtml = `<!DOCTYPE html><html lang="uk"><head><meta charset="UTF-8"><title>Медична виписка</title><style>body{font-family:sans-serif;padding:20px;color:#0f172a;} table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px;} th,td{border:1px solid #cbd5e1;padding:8px;text-align:left;vertical-align:top;} th{background:#e0f2fe;color:#0284c7;}</style></head><body>${content}</body></html>`;
+            let fileName = `MedCard_Vypyska_${new Date().toISOString().split('T')[0]}.html`;
+
+            if (window.AndroidNative && typeof window.AndroidNative.shareBackupFile === 'function') {
+                window.AndroidNative.shareBackupFile(fileName, fullHtml);
+                return;
+            }
+            let blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            showToast('Виписку завантажено!');
+        }
+
+        /* ==========================================
+           13. FULL-SCREEN ZOOM VIEWER, OFFLINE PDF.JS & CHUNKED FILE SHARING
+        ========================================== */
+        function extractPureBase64(dataURI) {
+            if (!dataURI) return '';
+            let commaIdx = dataURI.indexOf(',');
+            let pure = commaIdx !== -1 ? dataURI.substring(commaIdx + 1) : dataURI;
+            return pure.replace(/\s/g, '');
+        }
+
+        function dataURIToUint8Array(dataURI) {
+            let pure = extractPureBase64(dataURI);
+            let raw = window.atob(pure);
+            let uint8 = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) {
+                uint8[i] = raw.charCodeAt(i);
+            }
+            return uint8;
+        }
+
+        function getMediaMimeAndFileName(mediaObj) {
+            let dataURI = mediaObj.data || '';
+            let mime = 'image/jpeg';
+
+            if (mediaObj.type === 'pdf') {
+                mime = 'application/pdf';
+            } else if (mediaObj.type === 'video') {
+                mime = 'video/mp4';
+            } else if (mediaObj.type === 'audio') {
+                mime = 'audio/mp4';
+            } else if (dataURI.startsWith('data:')) {
+                let header = dataURI.substring(5, dataURI.indexOf(','));
+                let parts = header.split(';');
+                if (parts[0] && parts[0].includes('/')) {
+                    mime = parts[0];
+                }
+            }
+
+            let ext = '.jpg';
+            if (mime.includes('pdf') || mediaObj.type === 'pdf') {
+                mime = 'application/pdf';
+                ext = '.pdf';
+            } else if (mime.includes('png')) {
+                ext = '.png';
+            } else if (mime.includes('webm') && mediaObj.type === 'video') {
+                mime = 'video/webm';
+                ext = '.webm';
+            } else if (mediaObj.type === 'video' || mime.startsWith('video/')) {
+                mime = 'video/mp4';
+                ext = '.mp4';
+            } else if (mime.includes('mpeg') || mime.includes('mp3')) {
+                mime = 'audio/mpeg';
+                ext = '.mp3';
+            } else if (mime.includes('wav')) {
+                mime = 'audio/wav';
+                ext = '.wav';
+            } else if (mediaObj.type === 'audio' || mime.startsWith('audio/')) {
+                mime = 'audio/mp4';
+                ext = '.m4a';
+            }
+
+            let rawTitle = (mediaObj.title || mediaObj.name || 'MedFile').trim();
+            rawTitle = rawTitle.replace(/\.(pdf|jpg|jpeg|png|mp4|mov|webm|mp3|wav|m4a)$/i, '');
+            let cleanTitle = rawTitle.replace(/[^a-zA-Zа-яА-ЯіїєґІЇЄҐ0-9_\-]/g, '_');
+            if (!cleanTitle) cleanTitle = 'MedFile_' + Date.now();
+
+            return { mime, fileName: cleanTitle + ext };
+        }
+
+        function handleSingleMediaAction(visitId, mediaIdx, actionType) {
+            let v = dbData.visits.find(x => x.id === visitId);
+            if (!v || !v.media || !v.media[mediaIdx]) return;
+            executeMediaFileAction(v.media[mediaIdx], actionType);
+        }
+
+        function handleAudioAction(visitId, audioIdx, actionType) {
+            let v = dbData.visits.find(x => x.id === visitId);
+            if (!v || !v.audio || !v.audio[audioIdx]) return;
+            let a = v.audio[audioIdx];
+            executeMediaFileAction({ type: 'audio', title: a.name || 'Audio', data: a.data }, actionType);
+        }
+
+        async function executeMediaFileAction(mediaObj, actionType) {
+            if (!mediaObj || !mediaObj.data) {
+                showToast('Файл порожній або пошкоджений', 'danger');
+                return;
+            }
+            let { mime, fileName } = getMediaMimeAndFileName(mediaObj);
+            let title = mediaObj.title || mediaObj.name || fileName;
+
+            if (window.AndroidNative) {
+                try {
+                    if (typeof window.AndroidNative.startChunkedFile === 'function') {
+                        let pureB64 = extractPureBase64(mediaObj.data);
+                        let startRes = window.AndroidNative.startChunkedFile(fileName, mime);
+                        if (startRes === 'OK') {
+                            const CHUNK_SIZE = 262144;
+                            for (let offset = 0; offset < pureB64.length; offset += CHUNK_SIZE) {
+                                let slice = pureB64.substring(offset, offset + CHUNK_SIZE);
+                                let appRes = window.AndroidNative.appendFileChunk(slice);
+                                if (appRes !== 'OK') throw new Error(appRes);
+                            }
+                            let finRes = window.AndroidNative.finishChunkedFile(actionType, title);
+                            if (finRes === 'OK') {
+                                if (actionType === 'download') showToast(`✅ Збережено в Download: ${fileName}`);
+                                return;
+                            } else {
+                                showToast('Помилка: ' + finRes, 'warning');
+                                return;
+                            }
+                        }
+                    }
+                } catch (bridgeErr) {
+                    console.error('Bridge error:', bridgeErr);
+                }
+            }
+
+            try {
+                let bytes = dataURIToUint8Array(mediaObj.data);
+                let blob = new Blob([bytes], { type: mime });
+                if (actionType === 'share' && navigator.canShare) {
+                    let file = new File([blob], fileName, { type: mime });
+                    if (navigator.canShare({ files: [file] })) {
+                        await navigator.share({ title: title, files: [file] });
+                        return;
+                    }
+                }
+                let url = URL.createObjectURL(blob);
+                if (actionType === 'open') {
+                    window.open(url, '_blank');
+                } else {
+                    let a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    showToast(`✅ Завантажено: ${fileName}`);
+                }
+            } catch (e) {
+                showToast('Помилка файлу: ' + e.message, 'danger');
+            }
+        }
+
+        function openCurrentMediaExternally() {
+            if (activeViewerMedia) executeMediaFileAction(activeViewerMedia, 'open');
+        }
+        function shareCurrentMedia() {
+            if (activeViewerMedia) executeMediaFileAction(activeViewerMedia, 'share');
+        }
+        function downloadCurrentMedia() {
+            if (activeViewerMedia) executeMediaFileAction(activeViewerMedia, 'download');
+        }
+
+        async function openMediaViewer(mediaObj) {
+            pushModalState();
+            activeViewerMedia = mediaObj;
+            zoomScale = 1;
+            panX = 0;
+            panY = 0;
+
+            if (currentBlobUrl) {
+                URL.revokeObjectURL(currentBlobUrl);
+                currentBlobUrl = null;
+            }
+
+            let stage = document.getElementById('viewerStage');
+            let zoomControls = document.getElementById('viewerZoomControls');
+            document.getElementById('viewerTitleText').innerText = `${mediaObj.title || 'Документ'} ${mediaObj.tags || ''}`;
+            document.getElementById('zoomLevelIndicator').innerText = '100%';
+            document.getElementById('mediaViewerModal').style.display = 'flex';
+
+            let { mime } = getMediaMimeAndFileName(mediaObj);
+
+            if (mediaObj.type === 'video' || mime.startsWith('video/')) {
+                stage.className = 'viewer-stage';
+                zoomControls.style.display = 'none';
+                try {
+                    let bytes = dataURIToUint8Array(mediaObj.data);
+                    let blob = new Blob([bytes], { type: mime });
+                    currentBlobUrl = URL.createObjectURL(blob);
+                    stage.innerHTML = `
+                        <div style="width:96%; text-align:center;">
+                            <video controls autoplay playsinline style="width:100%; max-height:70vh; border-radius:12px; background:#000;" src="${currentBlobUrl}"></video>
+                            <p style="color:#94a3b8; font-size:0.8rem; margin-top:10px;">Також можна відкрити відео у системному плеєрі телефона:</p>
+                            <button class="btn" style="max-width:320px; margin:8px auto 0 auto;" onclick="openCurrentMediaExternally()">📱 Відкрити у відеоплеєрі телефона</button>
+                        </div>
+                    `;
+                } catch (e) {
+                    stage.innerHTML = `<div style="color:white; text-align:center; padding:20px;"><p>Формат відео потребує зовнішнього плеєра</p><button class="btn" onclick="openCurrentMediaExternally()">📱 Відкрити у відеоплеєрі телефона</button></div>`;
+                }
+                return;
+            }
+
+            if (mediaObj.type === 'pdf' || mime === 'application/pdf') {
+                stage.className = 'viewer-stage scrollable-pdf';
+                zoomControls.style.display = 'flex';
+                stage.innerHTML = `
+                    <div id="pdfPagesWrapper" style="width:100%; transform-origin: top left; transition: width 0.15s ease;">
+                        <div style="color:white; text-align:center; padding:30px;" id="pdfLoadingMsg">⏳ Розгортання сторінок PDF...</div>
+                    </div>
+                `;
+                renderPdfInsideStage(mediaObj);
+                return;
+            }
+
+            stage.className = 'viewer-stage';
+            zoomControls.style.display = 'flex';
+            stage.innerHTML = `<img id="zoomableImage" src="${mediaObj.data}" alt="Medical Document">`;
+            initImageTouchZoomAndPan();
+        }
+
+        async function renderPdfInsideStage(mediaObj) {
+            let wrapper = document.getElementById('pdfPagesWrapper');
+            if (!window.pdfjsLib) {
+                wrapper.innerHTML = `
+                    <div style="color:white; text-align:center; padding:30px;">
+                        <div style="font-size:3rem; margin-bottom:10px;">📄</div>
+                        <h3>${mediaObj.title || 'PDF-документ'}</h3>
+                        <p style="color:#94a3b8; margin:10px 0 18px 0;">Відкрийте цей PDF у системній читалці телефона:</p>
+                        <button class="btn" style="max-width:300px;" onclick="openCurrentMediaExternally()">📱 Відкрити PDF на телефоні</button>
+                    </div>
+                `;
+                return;
+            }
+            try {
+                let bytes = dataURIToUint8Array(mediaObj.data);
+                let loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+                let pdf = await loadingTask.promise;
+                wrapper.innerHTML = `<div style="color:#38bdf8; text-align:center; font-size:0.8rem; margin-bottom:8px;">📄 Сторінок у PDF: ${pdf.numPages}. Використовуйте кнопки ➕ / ➖ знизу для збільшення шрифту!</div>`;
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    let page = await pdf.getPage(pageNum);
+                    let viewport = page.getViewport({ scale: 2.0 });
+                    let canvas = document.createElement('canvas');
+                    canvas.style.width = '100%';
+                    canvas.style.height = 'auto';
+                    canvas.style.display = 'block';
+                    canvas.style.marginBottom = '12px';
+                    canvas.style.borderRadius = '8px';
+                    canvas.style.background = '#fff';
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    wrapper.appendChild(canvas);
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+                }
+            } catch (err) {
+                wrapper.innerHTML = `
+                    <div style="color:white; text-align:center; padding:30px;">
+                        <div style="font-size:3rem; margin-bottom:10px;">📄</div>
+                        <p style="margin-bottom:14px;">Відкрийте цей PDF у переглядачі вашого телефона:</p>
+                        <button class="btn" style="max-width:300px;" onclick="openCurrentMediaExternally()">📱 Відкрити в PDF-читалці телефона</button>
+                    </div>
+                `;
+            }
+        }
+
+        function applyTransformToViewer() {
+            let img = document.getElementById('zoomableImage');
+            if (img) {
+                img.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+            }
+            let pdfWrap = document.getElementById('pdfPagesWrapper');
+            if (pdfWrap) {
+                pdfWrap.style.width = `${Math.round(zoomScale * 100)}%`;
+            }
+            document.getElementById('zoomLevelIndicator').innerText = `${Math.round(zoomScale * 100)}%`;
+        }
+
+        function adjustViewerZoom(delta) {
+            zoomScale = Math.min(8, Math.max(1, +(zoomScale + delta).toFixed(2)));
+            if (zoomScale === 1) { panX = 0; panY = 0; }
+            applyTransformToViewer();
+        }
+
+        function resetViewerZoom() {
+            zoomScale = 1;
+            panX = 0;
+            panY = 0;
+            applyTransformToViewer();
+        }
+
+        function initImageTouchZoomAndPan() {
+            let stage = document.getElementById('viewerStage');
+            if (!stage) return;
+
+            stage.ontouchstart = function(e) {
+                if (e.touches.length === 2) {
+                    isPanning = false;
+                    let dx = e.touches[0].clientX - e.touches[1].clientX;
+                    let dy = e.touches[0].clientY - e.touches[1].clientY;
+                    startTouchDist = Math.hypot(dx, dy);
+                    startZoomScale = zoomScale;
+                } else if (e.touches.length === 1) {
+                    let now = Date.now();
+                    if (now - lastTapTime < 300) {
+                        if (zoomScale > 1.2) {
+                            resetViewerZoom();
+                        } else {
+                            zoomScale = 2.8;
+                            applyTransformToViewer();
+                        }
+                        lastTapTime = 0;
+                        return;
+                    }
+                    lastTapTime = now;
+
+                    if (zoomScale > 1) {
+                        isPanning = true;
+                        startPanX = e.touches[0].clientX - panX;
+                        startPanY = e.touches[0].clientY - panY;
+                    }
+                }
+            };
+
+            stage.ontouchmove = function(e) {
+                if (e.touches.length === 2 && startTouchDist > 0) {
+                    e.preventDefault();
+                    let dx = e.touches[0].clientX - e.touches[1].clientX;
+                    let dy = e.touches[0].clientY - e.touches[1].clientY;
+                    let dist = Math.hypot(dx, dy);
+                    let ratio = dist / startTouchDist;
+                    zoomScale = Math.min(8, Math.max(1, startZoomScale * ratio));
+                    applyTransformToViewer();
+                } else if (e.touches.length === 1 && isPanning && zoomScale > 1) {
+                    e.preventDefault();
+                    panX = e.touches[0].clientX - startPanX;
+                    panY = e.touches[0].clientY - startPanY;
+                    applyTransformToViewer();
+                }
+            };
+
+            stage.ontouchend = function(e) {
+                if (e.touches.length < 2) startTouchDist = 0;
+                if (e.touches.length === 0) isPanning = false;
+                if (zoomScale <= 1.02) {
+                    resetViewerZoom();
+                }
+            };
+        }
+
+        /* ==========================================
+           14. BACKUP, MIGRATION & EXPORT
+        ========================================== */
+        function buildBackupPayload() {
+            ensureArraysExist();
+            return JSON.stringify({
+                version: 12,
+                exportedAt: new Date().toISOString(),
+                members: dbData.members,
+                visits: dbData.visits,
+                medications: dbData.medications || [],
+                cabinet: dbData.cabinet || [],
+                doctors: dbData.doctors || [],
+                reminders: dbData.reminders || [],
+                settings: appSettings
+            });
+        }
+
+        function generateBackupFileName() {
+            let now = new Date();
+            let d = now.toISOString().split('T')[0];
+            let t = String(now.getHours()).padStart(2,'0') + '-' + String(now.getMinutes()).padStart(2,'0');
+            return `FamilyMed_Backup_${d}_${t}.json`;
+        }
+
+        function markBackupCompleted() {
+            appSettings.lastBackupTimestamp = Date.now();
+            saveSettings();
+            updateBackupSettingsUI();
+        }
+
+        function saveBackupInterval(daysVal) {
+            appSettings.backupIntervalDays = parseInt(daysVal) || 0;
+            saveSettings();
+            showToast('Інтервал збережено! ⏰');
+        }
+
+        function updateBackupSettingsUI() {
+            let sel = document.getElementById('backupIntervalSelect');
+            if (sel) sel.value = (appSettings.backupIntervalDays !== undefined ? appSettings.backupIntervalDays : 7).toString();
+
+            let infoEl = document.getElementById('lastBackupInfo');
+            if (infoEl) {
+                if (appSettings.lastBackupTimestamp) {
+                    let d = new Date(appSettings.lastBackupTimestamp);
+                    infoEl.innerText = `✅ Останній бекап: ${d.toLocaleDateString('uk-UA')} о ${d.toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'})}`;
+                } else {
+                    infoEl.innerText = '⚠️ Резервне копіювання ще не виконувалося';
+                }
+            }
+        }
+
+        function checkBackupSchedule() {
+            ensureArraysExist();
+            let banner = document.getElementById('backupDueBanner');
+            let intervalDays = parseInt(appSettings.backupIntervalDays) || 0;
+            if (intervalDays <= 0) { banner.style.display = 'none'; return; }
+            let totalRecords = dbData.members.length + dbData.visits.length + (dbData.cabinet ? dbData.cabinet.length : 0);
+            if (totalRecords === 0) { banner.style.display = 'none'; return; }
+            
+            if (!appSettings.lastBackupTimestamp) {
+                banner.style.display = 'flex';
+                return;
+            }
+            let diffDays = (Date.now() - appSettings.lastBackupTimestamp) / (1000 * 60 * 60 * 24);
+            if (diffDays >= intervalDays) {
+                banner.style.display = 'flex';
+                if (window.AndroidNative && typeof window.AndroidNative.saveBackupToPhone === 'function') {
+                    let autoName = `FamilyMed_AutoBackup_${new Date().toISOString().split('T')[0]}.json`;
+                    let res = window.AndroidNative.saveBackupToPhone(autoName, buildBackupPayload());
+                    if (res === 'OK') markBackupCompleted();
+                }
+            } else {
+                banner.style.display = 'none';
+            }
+        }
+
+        function saveBackupToPhoneDownload() {
+            let jsonStr = buildBackupPayload();
+            let fileName = generateBackupFileName();
+
+            if (window.AndroidNative && typeof window.AndroidNative.saveBackupToPhone === 'function') {
+                let res = window.AndroidNative.saveBackupToPhone(fileName, jsonStr);
+                if (res === 'OK') {
+                    markBackupCompleted();
+                    showToast(`✅ Збережено в папку Download: ${fileName}`);
+                    return;
+                }
+            }
+            let blob = new Blob([jsonStr], { type: 'application/json' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            markBackupCompleted();
+            showToast(`✅ Завантажено: ${fileName}`);
+        }
+
+        async function shareBackupToCloud() {
+            let jsonStr = buildBackupPayload();
+            let fileName = generateBackupFileName();
+
+            if (window.AndroidNative && typeof window.AndroidNative.shareBackupFile === 'function') {
+                let res = window.AndroidNative.shareBackupFile(fileName, jsonStr);
+                if (res === 'OK') { markBackupCompleted(); return; }
+            }
+            if (navigator.share) {
+                try {
+                    let file = new File([jsonStr], fileName, { type: 'application/json' });
+                    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        await navigator.share({ title: fileName, files: [file] });
+                        markBackupCompleted();
+                        return;
+                    }
+                } catch (e) {}
+            }
+            saveBackupToPhoneDownload();
+        }
+
+        function openMigrationModal() {
+            pushModalState();
+            document.getElementById('migrationModal').style.display = 'flex';
+        }
+
+        function triggerImportMode(mode) {
+            currentImportMode = mode;
+            document.getElementById('importFile').click();
+        }
+
+        function copyBackupToClipboard() {
+            let jsonStr = buildBackupPayload();
+            let ta = document.getElementById('pasteBackupArea');
+            if (ta) ta.value = jsonStr;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(jsonStr).then(() => {
+                    markBackupCompleted();
+                    showToast('Код бази скопійовано! 📋');
+                }).catch(() => fallbackCopyText(ta));
+            } else if (ta) {
+                fallbackCopyText(ta);
+            }
+        }
+
+        function fallbackCopyText(ta) {
+            ta.select();
+            document.execCommand('copy');
+            markBackupCompleted();
+            showToast('Код бази скопійовано! 📋');
+        }
+
+        function restoreFromPastedText(mode = 'replace') {
+            currentImportMode = mode;
+            let text = document.getElementById('pasteBackupArea').value.trim();
+            if (!text) { showToast('Вставте скопійований код!', 'warning'); return; }
+            processImportedJSON(text);
+        }
+
+        function importData(event) {
+            let file = event.target.files[0];
+            if (!file) return;
+            let reader = new FileReader();
+            reader.onload = function(e) {
+                processImportedJSON(e.target.result);
+                event.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        function mergeArraysById(existingArr, incomingArr) {
+            let map = new Map();
+            (existingArr || []).forEach(item => map.set(item.id, item));
+            (incomingArr || []).forEach(item => map.set(item.id, item));
+            return Array.from(map.values());
+        }
+
+        function processImportedJSON(jsonText) {
+            try {
+                let imported = JSON.parse(jsonText);
+                if (imported.members && imported.visits) {
+                    ensureArraysExist();
+                    if (currentImportMode === 'merge') {
+                        dbData.members = mergeArraysById(dbData.members, imported.members);
+                        dbData.visits = mergeArraysById(dbData.visits, imported.visits);
+                        dbData.medications = mergeArraysById(dbData.medications, imported.medications || []);
+                        dbData.cabinet = mergeArraysById(dbData.cabinet, imported.cabinet || []);
+                        dbData.doctors = mergeArraysById(dbData.doctors, imported.doctors || []);
+                        showToast('Бази успішно об\'єднано! 🎉');
+                    } else {
+                        dbData.members = imported.members;
+                        dbData.visits = imported.visits;
+                        dbData.medications = imported.medications || [];
+                        dbData.cabinet = imported.cabinet || [];
+                        dbData.doctors = imported.doctors || [];
+                        dbData.reminders = imported.reminders || [];
+                        if (imported.settings) {
+                            appSettings = { ...appSettings, ...imported.settings };
+                            saveSettings();
+                            applyTheme();
+                        }
+                        showToast('Базу успішно відновлено! 🎉');
+                    }
+                    let pa = document.getElementById('pasteBackupArea');
+                    if (pa) pa.value = '';
+                    closeModals();
+                    saveToIDB();
+                } else {
+                    showToast('Невірний формат файлу', 'danger');
+                }
+            } catch (err) {
+                showToast('Помилка читання JSON', 'danger');
+            }
+        }
+
+        function exportReadableReport() {
+            ensureArraysExist();
+            let lines = [];
+            lines.push('=========================================');
+            lines.push('   СІМЕЙНА МЕДИЧНА КАРТКА (ЗВІТ)');
+            lines.push('   Дата формування: ' + new Date().toLocaleDateString('uk-UA'));
+            lines.push('=========================================\n');
+
+            dbData.members.forEach(m => {
+                lines.push(`👤 ЧЛЕН РОДИНИ: ${m.name}`);
+                lines.push(`   Дата народження: ${m.birthDate || '—'} (${calculateAge(m.birthDate)})`);
+                lines.push(`   Група крові: ${m.bloodGroup || '—'} | Алергії: ${m.allergies || 'немає'}`);
+                if (m.chronic) lines.push(`   Хронічні стани: ${m.chronic}`);
+                lines.push('   --------------------------------------');
+
+                let mVisits = dbData.visits.filter(v => v.memberId === m.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+                if (mVisits.length === 0) {
+                    lines.push('   (Записів немає)\n');
+                } else {
+                    mVisits.forEach(v => {
+                        let cost = (Number(v.costDoctor)||0) + (Number(v.costMeds)||0);
+                        lines.push(`   • [${v.date}] ${v.type === 'home' ? '[ВДОМА]' : '[ЛІКАР]'} ${v.diagnosis || v.doctor}`);
+                        if (v.type !== 'home') lines.push(`     Лікар: ${v.doctor} (${v.clinic || '—'})`);
+                        if (v.reason) lines.push(`     Скарги: ${v.reason}`);
+                        if (v.treatment) lines.push(`     Лікування: ${v.treatment}`);
+                        if (cost > 0) lines.push(`     Витрати: ${cost} грн`);
+                    });
+                    lines.push('');
+                }
+            });
+
+            let reportText = lines.join('\n');
+            let fileName = `MedCard_Zvit_${new Date().toISOString().split('T')[0]}.txt`;
+
+            if (window.AndroidNative && typeof window.AndroidNative.shareBackupFile === 'function') {
+                window.AndroidNative.shareBackupFile(fileName, reportText);
+                return;
+            }
+            let blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        function openHelpModal() {
+            pushModalState();
+            document.getElementById('helpModal').style.display = 'flex';
+        }
+
+        function closeModals(fromPopState = false) {
+            let wasOpen = isAnyModalOpen();
+            document.querySelectorAll('.modal').forEach(m => m.style.display = 'none');
+            document.getElementById('mediaViewerModal').style.display = 'none';
+            document.getElementById('viewerStage').innerHTML = '';
+            if (currentBlobUrl) {
+                URL.revokeObjectURL(currentBlobUrl);
+                currentBlobUrl = null;
+            }
+            if (!fromPopState && wasOpen && window.history && window.history.state && window.history.state.modalOpen) {
+                ignoreNextPopState = true;
+                try { window.history.back(); } catch(e) { ignoreNextPopState = false; }
+            }
+        }
+
+        /* ==========================================
+           15. APP INITIALIZATION
+        ========================================== */
+        function renderAll() {
+            ensureArraysExist();
+            renderMembers();
+            updateDropdowns();
+            renderQuickFilterTags();
+            updateBackupSettingsUI();
+            updatePinSettingsUI();
+            checkBackupSchedule();
+            renderActiveRemindersBanner();
+
+            if (currentActiveTab === 'visits') renderVisits();
+            if (currentActiveTab === 'meds') { renderMeds(); renderCabinet(); }
+            if (currentActiveTab === 'doctors') renderDoctorsDirectory();
+            if (currentActiveTab === 'docs') renderDocumentsArchive();
+            if (currentActiveTab === 'timeline') renderTimeline();
+            if (currentActiveTab === 'analytics') renderAnalytics();
+        }
+
+        applyTheme();
+        checkInitialPinLock();
+        if (window.history && window.history.replaceState) {
+            window.history.replaceState({ tab: 'members' }, '');
+        }
+        initDB().then(() => {
+            renderAll();
+        });
+    </script>
+</body>
+</html>
